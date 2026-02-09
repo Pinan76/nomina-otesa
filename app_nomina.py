@@ -20,8 +20,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
 
-# --- CONFIGURACION DE PAGINA (SOLUCION AL ERROR UNICODE) ---
-# Usamos ":necktie:" que es el shortcode seguro de Streamlit en lugar del unicode directo
+# --- CONFIGURACION DE PAGINA ---
+# CAMBIO CRITICO: Usamos ":necktie:" en lugar del emoji directo para evitar error Unicode
 st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
 # ==========================================
@@ -34,8 +34,7 @@ PASSWORD_ADMIN = "OTE.Admin2026"
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
-    # Ignoramos el remitente de los secrets para evitar errores de caracteres
-    
+
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
 # ==========================================
@@ -48,12 +47,12 @@ with st.sidebar:
         st.title("OTE")
     
     st.write("---")
-    st.write("🔧 **Acceso Administrativo**")
+    st.write("Configuracion")
     modo_admin = st.toggle("Soy Administrador")
     
     acceso_concedido = False
     if modo_admin:
-        pass_input = st.text_input("Contraseña RRHH", type="password")
+        pass_input = st.text_input("Clave RRHH", type="password")
         if pass_input == PASSWORD_ADMIN:
             st.success("Acceso Concedido")
             acceso_concedido = True
@@ -71,10 +70,9 @@ if 'user_data' not in st.session_state:
 # --- 3. FUNCIONES TECNICAS ---
 
 def limpieza_segura(texto):
-    """Elimina todo caracter que no sea A-Z o 0-9"""
+    """Deja solo letras A-Z y numeros"""
     if not isinstance(texto, str): return "DOC"
-    # Reemplazo manual de la N tilde para evitar errores
-    clean = texto.upper().replace("Ñ", "N") 
+    clean = texto.upper().replace("N", "N") # Reemplazo simple para evitar caracteres raros
     return re.sub(r'[^A-Z0-9]', '', clean)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
@@ -117,11 +115,9 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         return None
 
 def enviar_correo_seguro(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # Nombres de archivo seguros (ASCII)
     rfc_limpio = limpieza_segura(rfc_empleado)
     nombre_archivo_seguro = f"Recibo_{rfc_limpio}.pdf"
     
-    # Validar correo destino
     email_destino = None
     if correo_empleado and "@" in str(correo_empleado):
         basura, parsed = parseaddr(correo_empleado)
@@ -135,9 +131,7 @@ def enviar_correo_seguro(correo_empleado, ruta_pdf, nombre_empleado, rfc_emplead
         destinatarios = []
         cuerpo = ""
         
-        # Cuerpo del mensaje: Aqui SI podemos usar acentos porque definimos UTF-8 abajo
-        nombre_empresa_display = "Operadora de Trajes Espanoles" 
-        
+        # Texto plano sin caracteres especiales
         if email_destino:
             msg['To'] = email_destino
             msg['Cc'] = SENDER_EMAIL
@@ -148,17 +142,15 @@ Adjunto enviamos tu recibo de nomina firmado digitalmente.
 RFC: {rfc_empleado}
 
 Atte.
-{nombre_empresa_display}
+Operadora de Trajes Espanoles
 Departamento de Recursos Humanos"""
         else:
             msg['To'] = SENDER_EMAIL
             destinatarios = [SENDER_EMAIL]
             cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_limpio} firmo correctamente (sin correo personal)."
 
-        # CODIFICACION UTF-8 EXPLICITA
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # Adjunto
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
@@ -166,7 +158,6 @@ Departamento de Recursos Humanos"""
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # Envio
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
@@ -211,7 +202,8 @@ def extraer_datos_limpios(pdf_file):
     try:
         reader = PdfReader(pdf_file)
         texto = "".join([page.extract_text() for page in reader.pages])
-        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\s]+)', texto) # Simplificado para evitar caracteres raros
+        # Regex simplificado ASCII
+        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\s]+)', texto) 
         nombre = limpiar_basico(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
         match_rfc = re.search(r'RFC:\s*([A-Z]{4}\d{6}[A-Z0-9]{3})', texto)
         rfc = match_rfc.group(1) if match_rfc else "N/A"
@@ -220,13 +212,13 @@ def extraer_datos_limpios(pdf_file):
 
 # --- 4. INTERFAZ PRINCIPAL ---
 
-st.title("Operadora de Trajes Espanoles") # Sin Ñ para evitar error de encoding en logs
+st.title("Operadora de Trajes Espanoles")
 st.caption("Sistema Nexus - Nomina Digital")
 
 if acceso_concedido:
-    tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
+    tab1, tab2 = st.tabs(["Portal Empleado", "Panel RRHH"])
 else:
-    tab1, = st.tabs(["👤 Portal Empleado"])
+    tab1, = st.tabs(["Portal Empleado"])
     tab2 = None
 
 # --- PESTANA 1: EMPLEADO ---
@@ -244,19 +236,19 @@ with tab1:
                 st.info(f"Colaborador: **{e['name']}**")
                 
                 if not gestionar_credenciales(rfc_in):
-                    p1 = st.text_input("Crear Contraseña", type="password")
+                    p1 = st.text_input("Crear Password", type="password")
                     if st.button("Registrar"):
                         gestionar_credenciales(rfc_in, p1, "registro")
                         st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
                 else:
-                    p_log = st.text_input("Contraseña", type="password")
+                    p_log = st.text_input("Password", type="password")
                     if st.button("Entrar"):
                         if gestionar_credenciales(rfc_in, p_log, "login"):
                             st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
                         else: st.error("Clave incorrecta")
             else: st.warning("RFC no encontrado en base de datos.")
         elif rfc_in:
-            st.error("⚠️ Base de datos no cargada (Esperando Admin).")
+            st.error("Base de datos no cargada (Esperando Admin).")
             
     else:
         u = st.session_state.user_data
@@ -274,12 +266,12 @@ with tab1:
 
                 st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
                 
-                # VISOR MEJORADO
-                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descárgalo aquí</a>.</p></object>'
+                # VISOR DE PDF
+                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descargalo aqui</a>.</p></object>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
                 st.download_button(
-                    label="⬇️ DESCARGAR PDF",
+                    label="DESCARGAR PDF",
                     data=pdf_bytes,
                     file_name=os.path.basename(archivo_encontrado),
                     mime="application/pdf",
@@ -290,7 +282,7 @@ with tab1:
                 st.write("**Firma Digital:**")
                 canvas = st_canvas(stroke_width=2, height=150, key="f")
                 
-                if st.button("✅ Firmar y Enviar"):
+                if st.button("Firmar y Enviar"):
                     if canvas.image_data is not None:
                         with st.spinner("Procesando firma..."):
                             ruta_firmado = generar_pdf_firmado(archivo_encontrado, canvas.image_data)
@@ -305,7 +297,7 @@ with tab1:
                                 exito, msg = enviar_correo_seguro(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
-                                    st.success("✅ ¡Listo! Recibo firmado enviado.")
+                                    st.success("Listo! Recibo firmado enviado.")
                                     st.balloons()
                                 else: st.error(f"Error envio: {msg}")
             else: 
@@ -313,7 +305,7 @@ with tab1:
                 st.warning(f"Buscamos: {u['file']} o el RFC {u['rfc']}")
         
         with c_der:
-            with st.expander("📧 Configuración", expanded=True):
+            with st.expander("Configuracion", expanded=True):
                 nc = st.text_input("Correo Personal")
                 if st.button("Guardar Email"):
                     if es_correo_valido(nc):
@@ -327,12 +319,12 @@ if acceso_concedido and tab2:
     with tab2:
         st.header("Panel Administrativo")
         
-        with st.expander("📂 Explorador de Archivos (DEBUG)", expanded=False):
+        with st.expander("Explorador de Archivos (DEBUG)", expanded=False):
             st.write("Archivos guardados actualmente:")
             if os.path.exists("recibos"):
                 archivos_en_nube = os.listdir("recibos")
                 if archivos_en_nube: st.write(archivos_en_nube)
-                else: st.warning("Carpeta vacía.")
+                else: st.warning("Carpeta vacia.")
             else: st.error("Carpeta no existe.")
 
         if os.path.exists('Control_Maestro.csv'):
@@ -344,8 +336,8 @@ if acceso_concedido and tab2:
             
             st.subheader("Estado de Firmas")
             df_status = df_m[['name', 'rfc']].copy()
-            df_status['Firmado'] = df_status['rfc'].isin(df_firmas['rfc']).map({True: '✅ SI', False: '❌ NO'})
-            def color_rojo(val): return f'color: {"red" if val == "❌ NO" else "green"}'
+            df_status['Firmado'] = df_status['rfc'].isin(df_firmas['rfc']).map({True: 'SI', False: 'NO'})
+            def color_rojo(val): return f'color: {"red" if val == "NO" else "green"}'
             st.dataframe(df_status.style.applymap(color_rojo, subset=['Firmado']), use_container_width=True)
 
         st.write("---")
@@ -367,5 +359,5 @@ if acceso_concedido and tab2:
                         df_fin = pd.concat([df_ex, pd.DataFrame(datos)]).drop_duplicates(subset=['rfc'], keep='last')
                     else: df_fin = pd.DataFrame(datos)
                     df_fin.to_csv('Control_Maestro.csv', index=False)
-                    st.success(f"✅ Se cargaron {len(datos)} empleados.")
+                    st.success(f"Se cargaron {len(datos)} empleados.")
                     st.rerun()
