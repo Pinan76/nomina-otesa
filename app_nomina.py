@@ -9,9 +9,8 @@ import io
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
-from email.header import Header # <--- LA SOLUCIÓN DEFINITIVA
 from email import encoders
-from email.utils import parseaddr, formataddr
+from email.utils import parseaddr
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from datetime import datetime
@@ -20,24 +19,21 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="👔")
+# --- CONFIGURACION DE PAGINA ---
+st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="\uD83D\uDC54") # Icono corbata
 
 # ==========================================
-# 📧 CONFIGURACIÓN
+# CONFIGURACION DE CORREO (ASCII PURO)
 # ==========================================
-# Valores por defecto
-EMAIL_SENDER_ADDR = "nomina@trajesespanoles.mx"
+# Usamos una direccion fija para evitar errores de lectura en los secrets
+SENDER_EMAIL = "nomina@trajesespanoles.mx"
+
+# Solo leemos la contrasena y admin desde secrets
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
-# Carga segura desde secrets
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
-    # Forzamos que la variable del remitente sea SOLO el email, ignorando nombres
-    raw = st.secrets["email_empresa"]
-    name, addr = parseaddr(raw)
-    EMAIL_SENDER_ADDR = addr if addr else "nomina@trajesespanoles.mx"
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
 
 SERVIDOR_SMTP = "smtp.ionos.com"
@@ -52,7 +48,7 @@ with st.sidebar:
         st.title("OTE")
     
     st.write("---")
-    st.write("🔧 **Acceso Administrativo**")
+    st.write("\uD83D\uDD27 **Acceso Administrativo**") # Icono llave
     modo_admin = st.toggle("Soy Administrador")
     
     acceso_concedido = False
@@ -64,7 +60,7 @@ with st.sidebar:
         elif pass_input:
             st.error("Acceso Denegado")
 
-# --- 2. INICIALIZACIÓN ---
+# --- 2. INICIALIZACION ---
 if 'autenticado' not in st.session_state:
     st.session_state.autenticado = False
 if 'rfc_actual' not in st.session_state:
@@ -72,15 +68,14 @@ if 'rfc_actual' not in st.session_state:
 if 'user_data' not in st.session_state:
     st.session_state.user_data = None
 
-# --- 3. FUNCIONES TÉCNICAS ---
+# --- 3. FUNCIONES TECNICAS ---
 
-def limpieza_extrema(texto):
-    """Deja solo letras (A-Z) y números. Convierte Ñ a N."""
+def limpieza_segura(texto):
+    """Elimina todo caracter que no sea A-Z o 0-9"""
     if not isinstance(texto, str): return "DOC"
-    # 1. Convertir a mayúsculas y reemplazar Ñ manualmente
-    texto = texto.upper().replace("Ñ", "N").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
-    # 2. Eliminar cualquier cosa que no sea número o letra inglesa
-    return re.sub(r'[^A-Z0-9]', '', texto)
+    # Reemplazamos N tilde por N normal usando unicode escape
+    clean = texto.upper().replace("\u00D1", "N") 
+    return re.sub(r'[^A-Z0-9]', '', clean)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
@@ -122,76 +117,66 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         return None
 
 def enviar_correo_seguro(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # Limpieza de nombres para archivo y asunto
-    rfc_limpio = limpieza_extrema(rfc_empleado)
+    # Nombres de archivo seguros (ASCII)
+    rfc_limpio = limpieza_segura(rfc_empleado)
     nombre_archivo_seguro = f"Recibo_{rfc_limpio}.pdf"
     
-    # Validación de correo destino
+    # Validar correo destino
     email_destino = None
-    if correo_empleado and isinstance(correo_empleado, str) and "@" in correo_empleado:
+    if correo_empleado and "@" in str(correo_empleado):
         basura, parsed = parseaddr(correo_empleado)
-        email_destino = parsed if parsed else correo_empleado.strip()
+        email_destino = parsed.strip()
 
     try:
         msg = MIMEMultipart()
-        
-        # --- ENCABEZADOS CODIFICADOS (Aquí estaba el error) ---
-        # Usamos Header() para que Python maneje la codificación automáticamente
-        # Esto soluciona el error 'ascii codec' en posición 38
-        
-        msg['From'] = EMAIL_SENDER_ADDR
-        msg['Subject'] = Header(f"Recibo Nomina - {rfc_limpio}", 'utf-8')
+        msg['From'] = SENDER_EMAIL
+        msg['Subject'] = f"Recibo Nomina - {rfc_limpio}"
 
         destinatarios = []
-        cuerpo_texto = ""
-
+        cuerpo = ""
+        
+        # Usamos secuencias de escape unicode para evitar la Ñ literal en el codigo
+        nombre_empresa = "Operadora de Trajes Espa\u00F1oles" # \u00F1 es la n tilde
+        
         if email_destino:
             msg['To'] = email_destino
-            msg['Cc'] = EMAIL_SENDER_ADDR
-            destinatarios = [email_destino, EMAIL_SENDER_ADDR]
-            
-            # Cuerpo del mensaje
-            cuerpo_texto = f"""Estimado colaborador(a),
+            msg['Cc'] = SENDER_EMAIL
+            destinatarios = [email_destino, SENDER_EMAIL]
+            cuerpo = f"""Estimado colaborador,
 
-Adjunto enviamos tu recibo de nómina firmado digitalmente.
+Adjunto enviamos tu recibo de nomina firmado digitalmente.
 RFC: {rfc_empleado}
 
 Atte.
-Operadora de Trajes Españoles
+{nombre_empresa}
 Departamento de Recursos Humanos"""
         else:
-            msg['To'] = EMAIL_SENDER_ADDR
-            destinatarios = [EMAIL_SENDER_ADDR]
-            cuerpo_texto = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_limpio} firmó correctamente (sin correo personal registrado)."
+            msg['To'] = SENDER_EMAIL
+            destinatarios = [SENDER_EMAIL]
+            cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_limpio} firmo correctamente (sin correo personal)."
 
-        # Agregamos el cuerpo especificando UTF-8
-        msg.attach(MIMEText(cuerpo_texto, 'plain', 'utf-8'))
+        # IMPORTANTE: Forzamos UTF-8 aqui
+        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # --- ADJUNTO ---
+        # Adjunto
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        
-        # Usamos Header también para el nombre del archivo por seguridad
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # --- ENVÍO ---
+        # Envio
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
         server.ehlo()
-        # Login
-        server.login(EMAIL_SENDER_ADDR, EMAIL_PASSWORD)
-        # Sendmail
-        server.sendmail(EMAIL_SENDER_ADDR, destinatarios, msg.as_string())
+        server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+        server.sendmail(SENDER_EMAIL, destinatarios, msg.as_string())
         server.quit()
-        
         return True, "Enviado correctamente"
-        
     except Exception as e:
-        return False, f"Error detallado: {str(e)}"
+        return False, f"Error: {str(e)}"
 
 def es_correo_valido(email):
     return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
@@ -226,7 +211,7 @@ def extraer_datos_limpios(pdf_file):
     try:
         reader = PdfReader(pdf_file)
         texto = "".join([page.extract_text() for page in reader.pages])
-        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', texto)
+        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\u00C0-\u00FF\s]+)', texto) # Regex acepta caracteres latinos
         nombre = limpiar_basico(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
         match_rfc = re.search(r'RFC:\s*([A-Z]{4}\d{6}[A-Z0-9]{3})', texto)
         rfc = match_rfc.group(1) if match_rfc else "N/A"
@@ -235,16 +220,16 @@ def extraer_datos_limpios(pdf_file):
 
 # --- 4. INTERFAZ PRINCIPAL ---
 
-st.title("Operadora de Trajes Españoles")
-st.caption("Sistema Nexus - Nómina Digital")
+st.title("Operadora de Trajes Espa\u00F1oles") # Titulo con unicode
+st.caption("Sistema Nexus - Nomina Digital")
 
 if acceso_concedido:
-    tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
+    tab1, tab2 = st.tabs(["\uD83D\uDC64 Portal Empleado (Vista Previa)", "\u2699\uFE0F Panel RRHH"])
 else:
-    tab1, = st.tabs(["👤 Portal Empleado"])
+    tab1, = st.tabs(["\uD83D\uDC64 Portal Empleado"])
     tab2 = None
 
-# --- PESTAÑA 1: EMPLEADO ---
+# --- PESTANA 1: EMPLEADO ---
 with tab1:
     if not st.session_state.autenticado:
         st.subheader("Acceso Personal")
@@ -259,12 +244,12 @@ with tab1:
                 st.info(f"Colaborador: **{e['name']}**")
                 
                 if not gestionar_credenciales(rfc_in):
-                    p1 = st.text_input("Crear Contraseña", type="password")
+                    p1 = st.text_input("Crear Contrase\u00F1a", type="password") # Contraseña
                     if st.button("Registrar"):
                         gestionar_credenciales(rfc_in, p1, "registro")
                         st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
                 else:
-                    p_log = st.text_input("Contraseña", type="password")
+                    p_log = st.text_input("Contrase\u00F1a", type="password")
                     if st.button("Entrar"):
                         if gestionar_credenciales(rfc_in, p_log, "login"):
                             st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
@@ -287,9 +272,9 @@ with tab1:
                     pdf_bytes = f.read()
                     base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
 
-                # --- VISOR PDF MEJORADO (<object>) ---
                 st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
                 
+                # VISOR ROBUSTO (<object> con fallback)
                 pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descárgalo aquí</a>.</p></object>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
@@ -317,13 +302,12 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # FUNCIÓN SEGURA
                                 exito, msg = enviar_correo_seguro(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
                                     st.balloons()
-                                else: st.error(f"Error envío: {msg}")
+                                else: st.error(f"Error envio: {msg}")
             else: 
                 st.error("Archivo PDF no encontrado.")
                 st.warning(f"Buscamos: {u['file']} o el RFC {u['rfc']}")
@@ -338,7 +322,7 @@ with tab1:
                         st.rerun()
             if st.button("Salir"): st.session_state.autenticado = False; st.rerun()
 
-# --- PESTAÑA 2: ADMIN ---
+# --- PESTANA 2: ADMIN ---
 if acceso_concedido and tab2:
     with tab2:
         st.header("Panel Administrativo")
@@ -365,7 +349,7 @@ if acceso_concedido and tab2:
             st.dataframe(df_status.style.applymap(color_rojo, subset=['Firmado']), use_container_width=True)
 
         st.write("---")
-        st.subheader("Carga de Nómina")
+        st.subheader("Carga de Nomina")
         uploaded = st.file_uploader("Subir PDFs Semanales", accept_multiple_files=True)
         
         if st.button("Procesar Archivos"):
