@@ -9,8 +9,9 @@ import io
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
+from email.header import Header # <--- LA SOLUCIÓN DEFINITIVA
 from email import encoders
-from email.utils import parseaddr
+from email.utils import parseaddr, formataddr
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from datetime import datetime
@@ -23,20 +24,21 @@ from PIL import Image
 st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="👔")
 
 # ==========================================
-# 📧 CONFIGURACIÓN BLINDADA
+# 📧 CONFIGURACIÓN
 # ==========================================
-RAW_EMAIL = "nomina@trajesespanoles.mx"
+# Valores por defecto
+EMAIL_SENDER_ADDR = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
+# Carga segura desde secrets
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
-    RAW_EMAIL = st.secrets["email_empresa"]
+    # Forzamos que la variable del remitente sea SOLO el email, ignorando nombres
+    raw = st.secrets["email_empresa"]
+    name, addr = parseaddr(raw)
+    EMAIL_SENDER_ADDR = addr if addr else "nomina@trajesespanoles.mx"
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
-
-# Limpieza del remitente de la empresa (Quita la Ñ del nombre)
-nombre_basura, EMAIL_LIMPIO = parseaddr(RAW_EMAIL)
-if not EMAIL_LIMPIO: EMAIL_LIMPIO = "nomina@trajesespanoles.mx"
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
@@ -72,16 +74,17 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def limpieza_segura_rfc(texto):
-    """Deja solo letras y números para nombres de archivo"""
+def limpieza_extrema(texto):
+    """Deja solo letras (A-Z) y números. Convierte Ñ a N."""
     if not isinstance(texto, str): return "DOC"
-    return re.sub(r'[^A-Z0-9]', '', texto.upper().replace("Ñ", "N"))
+    # 1. Convertir a mayúsculas y reemplazar Ñ manualmente
+    texto = texto.upper().replace("Ñ", "N").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+    # 2. Eliminar cualquier cosa que no sea número o letra inglesa
+    return re.sub(r'[^A-Z0-9]', '', texto)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
-    # 1. Ruta exacta
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta): return ruta_exacta
-    # 2. Búsqueda por RFC
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -118,63 +121,77 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_ascii(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    rfc_limpio = limpieza_segura_rfc(rfc_empleado)
+def enviar_correo_seguro(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # Limpieza de nombres para archivo y asunto
+    rfc_limpio = limpieza_extrema(rfc_empleado)
     nombre_archivo_seguro = f"Recibo_{rfc_limpio}.pdf"
     
-    # --- VALIDACIÓN SEGURA DEL CORREO DESTINO ---
-    email_destino_limpio = None
+    # Validación de correo destino
+    email_destino = None
     if correo_empleado and isinstance(correo_empleado, str) and "@" in correo_empleado:
-        # Solo intentamos limpiar si existe un correo real
         basura, parsed = parseaddr(correo_empleado)
-        email_destino_limpio = parsed if parsed else correo_empleado.strip()
+        email_destino = parsed if parsed else correo_empleado.strip()
 
     try:
         msg = MIMEMultipart()
-        msg['From'] = EMAIL_LIMPIO 
-        msg['Subject'] = f"Recibo Nomina - {rfc_limpio}"
+        
+        # --- ENCABEZADOS CODIFICADOS (Aquí estaba el error) ---
+        # Usamos Header() para que Python maneje la codificación automáticamente
+        # Esto soluciona el error 'ascii codec' en posición 38
+        
+        msg['From'] = EMAIL_SENDER_ADDR
+        msg['Subject'] = Header(f"Recibo Nomina - {rfc_limpio}", 'utf-8')
 
         destinatarios = []
-        cuerpo = ""
-        
-        # --- LÓGICA: ¿TIENE CORREO O NO? ---
-        if email_destino_limpio:
-            msg['To'] = email_destino_limpio
-            msg['Cc'] = EMAIL_LIMPIO
-            destinatarios = [email_destino_limpio, EMAIL_LIMPIO]
-            cuerpo = f"""Estimado colaborador(a),
+        cuerpo_texto = ""
+
+        if email_destino:
+            msg['To'] = email_destino
+            msg['Cc'] = EMAIL_SENDER_ADDR
+            destinatarios = [email_destino, EMAIL_SENDER_ADDR]
             
-            Adjunto enviamos tu recibo de nomina firmado digitalmente.
-            RFC: {rfc_empleado}
-            
-            Atte.
-            Operadora de Trajes Espanoles
-            Departamento de Recursos Humanos"""
+            # Cuerpo del mensaje
+            cuerpo_texto = f"""Estimado colaborador(a),
+
+Adjunto enviamos tu recibo de nómina firmado digitalmente.
+RFC: {rfc_empleado}
+
+Atte.
+Operadora de Trajes Españoles
+Departamento de Recursos Humanos"""
         else:
-            # SI NO TIENE CORREO, SOLO SE MANDA A LA EMPRESA
-            msg['To'] = EMAIL_LIMPIO
-            destinatarios = [EMAIL_LIMPIO]
-            cuerpo = f"AVISO: El empleado con RFC {rfc_limpio} firmo correctamente (sin correo personal registrado)."
+            msg['To'] = EMAIL_SENDER_ADDR
+            destinatarios = [EMAIL_SENDER_ADDR]
+            cuerpo_texto = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_limpio} firmó correctamente (sin correo personal registrado)."
 
-        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+        # Agregamos el cuerpo especificando UTF-8
+        msg.attach(MIMEText(cuerpo_texto, 'plain', 'utf-8'))
 
+        # --- ADJUNTO ---
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
+        
+        # Usamos Header también para el nombre del archivo por seguridad
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
+        # --- ENVÍO ---
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login(EMAIL_LIMPIO, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_LIMPIO, destinatarios, msg.as_string())
+        # Login
+        server.login(EMAIL_SENDER_ADDR, EMAIL_PASSWORD)
+        # Sendmail
+        server.sendmail(EMAIL_SENDER_ADDR, destinatarios, msg.as_string())
         server.quit()
+        
         return True, "Enviado correctamente"
+        
     except Exception as e:
-        return False, f"Error: {str(e)}"
+        return False, f"Error detallado: {str(e)}"
 
 def es_correo_valido(email):
     return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
@@ -277,7 +294,7 @@ with tab1:
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
                 st.download_button(
-                    label="⬇️ DESCARGAR PDF AHORA",
+                    label="⬇️ DESCARGAR PDF",
                     data=pdf_bytes,
                     file_name=os.path.basename(archivo_encontrado),
                     mime="application/pdf",
@@ -300,7 +317,8 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                exito, msg = enviar_correo_ascii(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                # FUNCIÓN SEGURA
+                                exito, msg = enviar_correo_seguro(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
