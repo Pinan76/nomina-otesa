@@ -72,12 +72,13 @@ def limpiar_texto(texto):
     return texto.replace('\n', ' ').replace('\r', '').strip()
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
-    # Opción A: Ruta exacta
+    """Busca primero por nombre exacto, luego por coincidencia de RFC"""
+    # 1. Búsqueda Exacta
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta):
         return ruta_exacta
     
-    # Opción B: Búsqueda por RFC
+    # 2. Búsqueda por RFC (Comodín)
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -211,6 +212,7 @@ with tab1:
         st.subheader("Acceso Personal")
         rfc_in = st.text_input("Ingresa tu RFC").upper()
         
+        # VERIFICACIÓN DE BASE DE DATOS
         if rfc_in and os.path.exists('Control_Maestro.csv'):
             df_m = pd.read_csv('Control_Maestro.csv')
             emp = df_m[df_m['rfc'] == rfc_in]
@@ -235,21 +237,42 @@ with tab1:
             st.error("⚠️ Base de datos no cargada (Esperando Admin).")
             
     else:
+        # USUARIO LOGUEADO
         u = st.session_state.user_data
         st.success(f"Bienvenido: {u['name']}")
         c_izq, c_der = st.columns([2, 1])
+        
         with c_izq:
             st.subheader("Tu Recibo")
             
-            # --- NUEVA LÓGICA DE BÚSQUEDA ---
+            # --- BÚSQUEDA INTELIGENTE ---
             archivo_encontrado = buscar_archivo_inteligente(u['file'], u['rfc'])
             
             if archivo_encontrado:
-                with open(archivo_encontrado, "rb") as f: b64 = base64.b64encode(f.read()).decode('utf-8')
-                st.markdown(f'<embed src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf">', unsafe_allow_html=True)
+                # 1. Leer el archivo binario
+                with open(archivo_encontrado, "rb") as f:
+                    pdf_bytes = f.read()
+                    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+
+                st.info(f"📄 Visualizando archivo: {os.path.basename(archivo_encontrado)}")
+
+                # 2. VISOR MEJORADO (IFRAME)
+                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+                st.markdown(pdf_display, unsafe_allow_html=True)
                 
+                # 3. BOTÓN DE EMERGENCIA (DESCARGA)
                 st.write("---")
-                st.write("**Firma aquí:**")
+                col_d1, col_d2 = st.columns([3, 1])
+                with col_d1:
+                    st.download_button(
+                        label="⬇️ Descargar PDF (Si no puedes verlo arriba)",
+                        data=pdf_bytes,
+                        file_name=os.path.basename(archivo_encontrado),
+                        mime="application/pdf",
+                    )
+
+                st.write("---")
+                st.write("**Firma Digital:**")
                 canvas = st_canvas(stroke_width=2, height=150, key="f")
                 
                 if st.button("✅ Firmar y Enviar"):
@@ -270,7 +293,8 @@ with tab1:
                                 else: st.error(f"Error envío: {msg}")
             else: 
                 st.error("Archivo PDF no encontrado en el servidor.")
-                st.warning(f"Buscamos: {u['file']} o el RFC {u['rfc']}")
+                st.warning(f"El sistema buscó: {u['file']} o el RFC {u['rfc']}")
+                st.info("Nota: Si el Admin acaba de reiniciar el sistema, debe cargar los recibos de nuevo.")
         
         with c_der:
             with st.expander("📧 Configuración", expanded=True):
@@ -289,12 +313,15 @@ if acceso_concedido and tab2:
         
         # VISOR DE ARCHIVOS EN NUBE (DEBUG)
         with st.expander("📂 Explorador de Archivos (DEBUG)", expanded=False):
-            st.write("Archivos guardados actualmente en la carpeta 'recibos':")
+            st.write("Archivos guardados actualmente en la memoria de la nube:")
             if os.path.exists("recibos"):
                 archivos_en_nube = os.listdir("recibos")
-                st.write(archivos_en_nube)
+                if archivos_en_nube:
+                    st.write(archivos_en_nube)
+                else:
+                    st.warning("La carpeta 'recibos' está vacía. ¡Sube los PDFs!")
             else:
-                st.write("❌ La carpeta 'recibos' no existe.")
+                st.error("❌ La carpeta 'recibos' no existe. ¡Sube los PDFs!")
 
         if os.path.exists('Control_Maestro.csv'):
             df_m = pd.read_csv('Control_Maestro.csv')
@@ -311,6 +338,7 @@ if acceso_concedido and tab2:
 
         st.write("---")
         st.subheader("Carga de Nómina")
+        st.info("Paso 1: Sube los archivos aquí. Paso 2: Dale a Procesar.")
         uploaded = st.file_uploader("Subir PDFs Semanales", accept_multiple_files=True)
         
         if st.button("Procesar Archivos"):
