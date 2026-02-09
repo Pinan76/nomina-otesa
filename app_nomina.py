@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import base64
 import os
-import re # <--- Importante para la limpieza estricta
+import re
 import glob
 import smtplib
 import io
@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from email.utils import formataddr
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from datetime import datetime
@@ -26,15 +27,20 @@ st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page
 # ==========================================
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
-    EMAIL_EMPRESA = st.secrets["email_empresa"]
+    RAW_EMAIL_EMPRESA = st.secrets["email_empresa"]
     PASSWORD_ADMIN = st.secrets["admin_password"]
 else:
-    EMAIL_EMPRESA = "nomina@trajesespanoles.mx"
+    RAW_EMAIL_EMPRESA = "nomina@trajesespanoles.mx"
     EMAIL_PASSWORD = "OTE.R3c1b05" 
     PASSWORD_ADMIN = "OTE.Admin2026"
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
+
+# --- LIMPIEZA DE LA VARIABLE EMAIL (ELIMINA LA Ñ DE LOS SECRETOS) ---
+# Extrae solo la dirección de correo (ej: nomina@trajes...) ignorando el nombre "Operadora..."
+match_email = re.search(r'[\w\.-]+@[\w\.-]+', RAW_EMAIL_EMPRESA)
+EMAIL_EMPRESA = match_email.group(0) if match_email else RAW_EMAIL_EMPRESA
 # ==========================================
 
 # --- 1. BARRA LATERAL ---
@@ -69,17 +75,11 @@ if 'user_data' not in st.session_state:
 
 def limpieza_nuclear_ascii(texto):
     """
-    Usa Expresiones Regulares (Regex) para permitir SOLAMENTE
-    letras de la A a la Z y números.
-    La Ñ y los acentos son eliminados instantáneamente.
+    Elimina cualquier carácter que no sea A-Z o 0-9.
+    Garantiza que el nombre del archivo sea seguro.
     """
     if not isinstance(texto, str): return "DOC"
-    
-    # Paso 1: Reemplazo manual amigable (para que Nuñez sea Nunez y no Nuez)
-    texto = texto.upper().replace("Ñ", "N").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
-    
-    # Paso 2: REGEX ESTRICTO (Solo A-Z y 0-9)
-    # Todo lo que no sea una letra inglesa o numero se borra
+    texto = texto.upper().replace("Ñ", "N")
     return re.sub(r'[^A-Z0-9]', '', texto)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
@@ -122,22 +122,22 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_definitivo(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Limpieza estricta de variables para el nombre del archivo
+def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. Nombre de archivo seguro (Solo RFC)
     rfc_seguro = limpieza_nuclear_ascii(rfc_empleado)
-    
-    # Nombre del archivo FINAL: Recibo_ABCD123456.pdf (Sin Ñ, sin espacios, sin P)
     nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf"
     
     try:
         msg = MIMEMultipart()
+        
+        # 2. REMITENTE SEGURO (Solo el email limpio, sin nombre "Operadora...")
         msg['From'] = EMAIL_EMPRESA
-        msg['Subject'] = f"Recibo Nomina - {rfc_seguro}" # Asunto seguro
+        msg['Subject'] = f"Recibo Nomina - {rfc_seguro}"
 
         destinatarios = []
         cuerpo = ""
         
-        # Cuerpo del mensaje en texto plano UTF-8 (Aquí sí podemos poner acentos en el texto)
+        # Cuerpo del mensaje (Sin acentos ni Ñ en el nombre de la empresa)
         if correo_empleado:
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
@@ -156,17 +156,15 @@ def enviar_correo_definitivo(correo_empleado, ruta_pdf, nombre_empleado, rfc_emp
 
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # ADJUNTAR ARCHIVO
+        # Adjunto
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        
-        # EL PASO CRITICO: Usar el nombre de archivo saneado
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # ENVÍO
+        # Envío
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
@@ -302,8 +300,7 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # USAMOS LA NUEVA FUNCIÓN CON UTF-8
-                                exito, msg = enviar_correo_definitivo(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                exito, msg = enviar_correo_blindado(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
