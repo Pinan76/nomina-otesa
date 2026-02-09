@@ -23,7 +23,7 @@ from PIL import Image
 st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="👔")
 
 # ==========================================
-# 📧 CONFIGURACIÓN
+# 📧 CONFIGURACIÓN BLINDADA
 # ==========================================
 RAW_EMAIL = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05"
@@ -34,12 +34,13 @@ if "email_password" in st.secrets:
     RAW_EMAIL = st.secrets["email_empresa"]
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
 
-# Limpieza del remitente (Solo email, sin nombres)
+# Limpieza del remitente de la empresa (Quita la Ñ del nombre)
 nombre_basura, EMAIL_LIMPIO = parseaddr(RAW_EMAIL)
 if not EMAIL_LIMPIO: EMAIL_LIMPIO = "nomina@trajesespanoles.mx"
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
+# ==========================================
 
 # --- 1. BARRA LATERAL ---
 with st.sidebar:
@@ -72,7 +73,7 @@ if 'user_data' not in st.session_state:
 # --- 3. FUNCIONES TÉCNICAS ---
 
 def limpieza_segura_rfc(texto):
-    """Deja solo letras y numeros para nombres de archivo"""
+    """Deja solo letras y números para nombres de archivo"""
     if not isinstance(texto, str): return "DOC"
     return re.sub(r'[^A-Z0-9]', '', texto.upper().replace("Ñ", "N"))
 
@@ -121,9 +122,12 @@ def enviar_correo_ascii(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado
     rfc_limpio = limpieza_segura_rfc(rfc_empleado)
     nombre_archivo_seguro = f"Recibo_{rfc_limpio}.pdf"
     
-    # LIMPIEZA DEL CORREO DESTINO (Por si copiaron "Nombre <email>")
-    basura, email_destino_limpio = parseaddr(correo_empleado)
-    if not email_destino_limpio: email_destino_limpio = correo_empleado.strip()
+    # --- VALIDACIÓN SEGURA DEL CORREO DESTINO ---
+    email_destino_limpio = None
+    if correo_empleado and isinstance(correo_empleado, str) and "@" in correo_empleado:
+        # Solo intentamos limpiar si existe un correo real
+        basura, parsed = parseaddr(correo_empleado)
+        email_destino_limpio = parsed if parsed else correo_empleado.strip()
 
     try:
         msg = MIMEMultipart()
@@ -133,7 +137,7 @@ def enviar_correo_ascii(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado
         destinatarios = []
         cuerpo = ""
         
-        # --- TEXTO SIN Ñ NI ACENTOS (100% ASCII) ---
+        # --- LÓGICA: ¿TIENE CORREO O NO? ---
         if email_destino_limpio:
             msg['To'] = email_destino_limpio
             msg['Cc'] = EMAIL_LIMPIO
@@ -147,9 +151,10 @@ def enviar_correo_ascii(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado
             Operadora de Trajes Espanoles
             Departamento de Recursos Humanos"""
         else:
+            # SI NO TIENE CORREO, SOLO SE MANDA A LA EMPRESA
             msg['To'] = EMAIL_LIMPIO
             destinatarios = [EMAIL_LIMPIO]
-            cuerpo = f"AVISO: El empleado con RFC {rfc_limpio} firmo (sin correo personal)."
+            cuerpo = f"AVISO: El empleado con RFC {rfc_limpio} firmo correctamente (sin correo personal registrado)."
 
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
@@ -268,11 +273,9 @@ with tab1:
                 # --- VISOR PDF MEJORADO (<object>) ---
                 st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
                 
-                # Visualización
                 pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descárgalo aquí</a>.</p></object>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
-                # Botón de Respaldo
                 st.download_button(
                     label="⬇️ DESCARGAR PDF AHORA",
                     data=pdf_bytes,
@@ -297,7 +300,6 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # FUNCIÓN ASCII PURO
                                 exito, msg = enviar_correo_ascii(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
