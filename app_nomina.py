@@ -6,11 +6,9 @@ import re
 import glob
 import smtplib
 import io
-# Eliminamos unicodedata y usamos limpieza manual para asegurar ASCII puro
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
-from email.header import Header
 from email import encoders
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
@@ -21,10 +19,10 @@ from reportlab.lib.utils import ImageReader
 from PIL import Image
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="OTESA - Operadora de Trajes", layout="wide", page_icon="🧵")
+st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
-# 📧 CONFIGURACIÓN SEGURA
+# 📧 CONFIGURACIÓN
 # ==========================================
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
@@ -41,8 +39,8 @@ PUERTO_SMTP = 587
 
 # --- 1. BARRA LATERAL ---
 with st.sidebar:
-    if os.path.exists("logo.jpg"):
-        st.image("logo.jpg", width=200)
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=200)
     else:
         st.title("OTE")
     
@@ -69,49 +67,35 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def limpiar_texto(texto):
+def sanear_ascii(texto):
+    """
+    Función Nuclear: Elimina cualquier rastro de Ñ o acentos
+    para que el asunto del correo no falle jamás.
+    """
     if not isinstance(texto, str): return str(texto)
-    return texto.replace('\n', ' ').replace('\r', '').strip()
-
-def normalizar_nombre_archivo_despiadado(nombre):
-    """
-    Versión agresiva: Reemplaza manualmente caracteres latinos
-    y elimina todo lo que no sea ASCII estándar.
-    """
-    if not isinstance(nombre, str): return "documento.pdf"
     
-    # 1. Reemplazos manuales (Infalible)
-    reemplazos = (
-        ("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
-        ("Á", "A"), ("É", "E"), ("Í", "I"), ("Ó", "O"), ("Ú", "U"),
-        ("ñ", "n"), ("Ñ", "N"), ("ü", "u"), ("Ü", "U")
-    )
-    for a, b in reemplazos:
-        nombre = nombre.replace(a, b)
-    
-    # 2. Filtrado final: Solo deja letras, números, puntos, guiones y guiones bajos
-    # Esto elimina cualquier "basura" invisible que cause el error ASCII
-    nombre_limpio = "".join(c for c in nombre if c.isalnum() or c in "._-")
-    
-    return nombre_limpio
+    # 1. Reemplazos manuales
+    texto = texto.replace("Ñ", "N").replace("ñ", "n")
+    vocales = {"á":"a", "é":"e", "í":"i", "ó":"o", "ú":"u", "Á":"A", "É":"E", "Í":"I", "Ó":"O", "Ú":"U"}
+    for v, r in vocales.items():
+        texto = texto.replace(v, r)
+        
+    # 2. Filtrado final (Solo deja caracteres seguros)
+    return texto.encode('ascii', 'ignore').decode('ascii')
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta):
         return ruta_exacta
-    
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
-    
-    if coincidencias:
-        return coincidencias[0]
-    
+    if coincidencias: return coincidencias[0]
     return None
 
 def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
-    POSICION_X = 430  
-    POSICION_Y = 240 
+    POSICION_X = 460  
+    POSICION_Y = 300 
     try:
         packet = io.BytesIO()
         can = pdf_canvas.Canvas(packet, pagesize=letter)
@@ -121,7 +105,7 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         img_byte_arr.seek(0)
         can.drawImage(ImageReader(img_byte_arr), POSICION_X, POSICION_Y, width=150, height=60, mask='auto')
         can.setFont("Helvetica", 6)
-        can.drawString(POSICION_X + 40, POSICION_Y - 5, "Firma Digital Empleado") 
+        can.drawString(POSICION_X + 10, POSICION_Y - 10, "Firma Digital Nexus") 
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -139,26 +123,20 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_empleado):
-    nombre_limpio = limpiar_texto(nombre_empleado)
+def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. Limpiamos el nombre para el CUERPO del correo (aquí sí se vale Ñ visualmente)
+    nombre_display = nombre_empleado.replace('\n', ' ').strip()
     
-    # --- LIMPIEZA EXTREMA DEL NOMBRE DEL ARCHIVO ---
-    nombre_archivo_original = os.path.basename(ruta_pdf)
-    nombre_archivo_seguro = normalizar_nombre_archivo_despiadado(nombre_archivo_original)
+    # 2. Limpiamos el nombre para el ASUNTO (Aquí NO se vale Ñ)
+    asunto_seguro = f"Recibo Firmado - {sanear_ascii(nombre_display)}"
     
-    # Seguridad: si quedó vacío, poner nombre genérico
-    if not nombre_archivo_seguro or len(nombre_archivo_seguro) < 5:
-        nombre_archivo_seguro = f"Recibo_Nomina_{datetime.now().strftime('%Y%m%d')}.pdf"
-    # -----------------------------------------------
-    
+    # 3. TRUCO FINAL: Usamos el RFC para el nombre del archivo. 
+    # El RFC es siempre seguro (letras y números). Adiós error \xd1.
+    nombre_archivo_seguro = f"Recibo_{rfc_empleado}.pdf"
+
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_EMPRESA
-        
-        # Asunto limpio
-        asunto_seguro = f"Recibo Firmado - {nombre_limpio}"
-        # Forzamos conversión a ASCII puro en el asunto si Header falla (Plan B)
-        asunto_seguro = normalizar_nombre_archivo_despiadado(asunto_seguro).replace("_", " ")
         msg['Subject'] = asunto_seguro
 
         destinatarios = []
@@ -168,13 +146,12 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
             destinatarios = [correo_empleado, EMAIL_EMPRESA]
-            cuerpo = f"Estimado/a Colaborador/a,\n\nSe adjunta tu recibo firmado.\n\nAtte.\nOperadora de Trajes Españoles"
+            cuerpo = f"Estimado/a Colaborador/a,\n\nAdjunto enviamos tu recibo de nómina firmado.\n\nAtte.\nOperadora de Trajes Españoles"
         else:
             msg['To'] = EMAIL_EMPRESA
             destinatarios = [EMAIL_EMPRESA]
-            cuerpo = f"AVISO: El empleado {nombre_limpio} firmó (sin correo personal)."
+            cuerpo = f"AVISO: El empleado {nombre_display} firmó (sin correo personal)."
 
-        # Cuerpo en UTF-8 (Esto sí lo soporta bien MIMEText)
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
         with open(ruta_pdf, "rb") as f:
@@ -182,7 +159,7 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
             part.set_payload(f.read())
         encoders.encode_base64(part)
         
-        # AQUÍ ES LA CLAVE: filename debe ser 100% ASCII
+        # Aquí usamos el nombre con RFC. Garantizado 100% ASCII.
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
@@ -195,7 +172,7 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
         server.quit()
         return True, "Enviado con documento firmado"
     except Exception as e:
-        return False, f"Error: {str(e)}"
+        return False, f"Error detallado: {str(e)}"
 
 def es_correo_valido(email):
     return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
@@ -226,11 +203,12 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
         pd.concat([df, pd.DataFrame([{'rfc': rfc, 'password': password_input}])]).to_csv(file_cred, index=False)
 
 def extraer_datos_limpios(pdf_file):
+    def limpiar_basico(t): return t.replace('\n', ' ').strip()
     try:
         reader = PdfReader(pdf_file)
         texto = "".join([page.extract_text() for page in reader.pages])
         match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-ZÁÉÍÓÚÑ\s]+)', texto)
-        nombre = limpiar_texto(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
+        nombre = limpiar_basico(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
         match_rfc = re.search(r'RFC:\s*([A-Z]{4}\d{6}[A-Z0-9]{3})', texto)
         rfc = match_rfc.group(1) if match_rfc else "N/A"
         return {"file": pdf_file.name, "name": nombre, "rfc": rfc}
@@ -239,7 +217,7 @@ def extraer_datos_limpios(pdf_file):
 # --- 4. INTERFAZ PRINCIPAL ---
 
 st.title("Operadora de Trajes Españoles")
-st.caption("Sistema OTESA - Nómina Digital")
+st.caption("Sistema Nexus - Nómina Digital")
 
 if acceso_concedido:
     tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
@@ -319,7 +297,10 @@ with tab1:
                                     df_c = pd.read_csv('Directorio_Contactos.csv')
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
-                                exito, msg = enviar_correo_con_copia_obligatoria(correo_empleado, ruta_firmado, u['name'])
+                                
+                                # PASAMOS EL RFC AQUÍ
+                                exito, msg = enviar_correo_con_copia_obligatoria(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
                                     st.balloons()
