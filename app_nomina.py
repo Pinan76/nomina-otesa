@@ -19,7 +19,7 @@ from reportlab.lib.utils import ImageReader
 from PIL import Image
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page_icon="🧵")
+st.set_page_config(page_title="OTESA - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
 # 📧 CONFIGURACIÓN
@@ -67,21 +67,23 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def sanear_ascii(texto):
+def sanear_totalmente(texto):
     """
-    Función Nuclear: Elimina cualquier rastro de Ñ o acentos
-    para que el asunto del correo no falle jamás.
+    Elimina cualquier carácter que no sea inglés básico.
+    Convierte Ñ -> N, ó -> o, etc.
     """
     if not isinstance(texto, str): return str(texto)
     
-    # 1. Reemplazos manuales
+    # Reemplazos manuales
     texto = texto.replace("Ñ", "N").replace("ñ", "n")
-    vocales = {"á":"a", "é":"e", "í":"i", "ó":"o", "ú":"u", "Á":"A", "É":"E", "Í":"I", "Ó":"O", "Ú":"U"}
-    for v, r in vocales.items():
-        texto = texto.replace(v, r)
-        
-    # 2. Filtrado final (Solo deja caracteres seguros)
-    return texto.encode('ascii', 'ignore').decode('ascii')
+    texto = texto.replace("Á", "A").replace("á", "a")
+    texto = texto.replace("É", "E").replace("é", "e")
+    texto = texto.replace("Í", "I").replace("í", "i")
+    texto = texto.replace("Ó", "O").replace("ó", "o")
+    texto = texto.replace("Ú", "U").replace("ú", "u")
+    
+    # Filtro final: Solo permite letras, números y espacios básicos
+    return "".join(c for c in texto if c.isalnum() or c in " ._-")
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
@@ -94,8 +96,8 @@ def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     return None
 
 def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
-    POSICION_X = 460  
-    POSICION_Y = 300 
+    POSICION_X = 430  
+    POSICION_Y = 240 
     try:
         packet = io.BytesIO()
         can = pdf_canvas.Canvas(packet, pagesize=letter)
@@ -105,7 +107,7 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         img_byte_arr.seek(0)
         can.drawImage(ImageReader(img_byte_arr), POSICION_X, POSICION_Y, width=150, height=60, mask='auto')
         can.setFont("Helvetica", 6)
-        can.drawString(POSICION_X + 10, POSICION_Y - 10, "Firma Digital Nexus") 
+        can.drawString(POSICION_X + 40, POSICION_Y - 5, "Firma Digital Empleado") 
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -123,16 +125,14 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Limpiamos el nombre para el CUERPO del correo (aquí sí se vale Ñ visualmente)
-    nombre_display = nombre_empleado.replace('\n', ' ').strip()
+def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. Limpieza nuclear de nombres
+    nombre_seguro = sanear_totalmente(nombre_empleado)
+    rfc_seguro = sanear_totalmente(rfc_empleado)
     
-    # 2. Limpiamos el nombre para el ASUNTO (Aquí NO se vale Ñ)
-    asunto_seguro = f"Recibo Firmado - {sanear_ascii(nombre_display)}"
-    
-    # 3. TRUCO FINAL: Usamos el RFC para el nombre del archivo. 
-    # El RFC es siempre seguro (letras y números). Adiós error \xd1.
-    nombre_archivo_seguro = f"Recibo_{rfc_empleado}.pdf"
+    # 2. Asunto y Archivo 100% ASCII
+    asunto_seguro = f"Recibo de Nomina - {rfc_seguro}"
+    nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf"
 
     try:
         msg = MIMEMultipart()
@@ -142,27 +142,33 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
         destinatarios = []
         cuerpo = ""
         
+        # 3. Cuerpo del mensaje sin acentos ni Ñ (Operadora de Trajes Espanoles)
         if correo_empleado:
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
             destinatarios = [correo_empleado, EMAIL_EMPRESA]
-            cuerpo = f"Estimado/a Colaborador/a,\n\nAdjunto enviamos tu recibo de nómina firmado.\n\nAtte.\nOperadora de Trajes Españoles"
+            cuerpo = f"""Estimado colaborador {rfc_seguro},
+            
+            Adjunto enviamos tu recibo de nomina firmado.
+            
+            Atte.
+            Operadora de Trajes Espanoles (RRHH)"""
         else:
             msg['To'] = EMAIL_EMPRESA
             destinatarios = [EMAIL_EMPRESA]
-            cuerpo = f"AVISO: El empleado {nombre_display} firmó (sin correo personal)."
+            cuerpo = f"AVISO: El empleado con RFC {rfc_seguro} firmo el recibo (sin correo personal)."
 
-        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+        msg.attach(MIMEText(cuerpo, 'plain'))
 
+        # 4. Adjunto
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        
-        # Aquí usamos el nombre con RFC. Garantizado 100% ASCII.
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
+        # 5. Envío
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
@@ -170,9 +176,9 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
         server.login(EMAIL_EMPRESA, EMAIL_PASSWORD)
         server.sendmail(EMAIL_EMPRESA, destinatarios, msg.as_string())
         server.quit()
-        return True, "Enviado con documento firmado"
+        return True, "Enviado correctamente"
     except Exception as e:
-        return False, f"Error detallado: {str(e)}"
+        return False, f"Error: {str(e)}"
 
 def es_correo_valido(email):
     return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
@@ -217,7 +223,7 @@ def extraer_datos_limpios(pdf_file):
 # --- 4. INTERFAZ PRINCIPAL ---
 
 st.title("Operadora de Trajes Españoles")
-st.caption("Sistema Nexus - Nómina Digital")
+st.caption("Sistema OTESA - Nómina Digital")
 
 if acceso_concedido:
     tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
@@ -298,8 +304,8 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # PASAMOS EL RFC AQUÍ
-                                exito, msg = enviar_correo_con_copia_obligatoria(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                # PASAMOS EL RFC AQUÍ Y USAMOS LA VERSIÓN BLINDADA
+                                exito, msg = enviar_correo_blindado(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
