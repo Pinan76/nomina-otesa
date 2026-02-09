@@ -1,0 +1,6 @@
+streamlit
+pandas
+pypdf
+reportlab
+Pillow
+streamlit-drawable-canvas
