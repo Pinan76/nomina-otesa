@@ -10,7 +10,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from email.utils import formataddr
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from datetime import datetime
@@ -23,25 +22,28 @@ from PIL import Image
 st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
-# 📧 CONFIGURACIÓN
+# 📧 CONFIGURACIÓN INTELIGENTE
 # ==========================================
+# Aquí está el truco: Limpiamos la variable para quitar la Ñ del remitente técnico
+
+RAW_EMAIL_EMPRESA = "nomina@trajesespanoles.mx" # Valor por defecto
+EMAIL_PASSWORD = "OTE.R3c1b05"
+PASSWORD_ADMIN = "OTE.Admin2026"
+
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
-    RAW_EMAIL_EMPRESA = st.secrets["email_empresa"]
+    RAW_EMAIL_EMPRESA = st.secrets["email_empresa"] # Aquí viene con "Españoles"
     PASSWORD_ADMIN = st.secrets["admin_password"]
-else:
-    RAW_EMAIL_EMPRESA = "nomina@trajesespanoles.mx"
-    EMAIL_PASSWORD = "OTE.R3c1b05" 
-    PASSWORD_ADMIN = "OTE.Admin2026"
+
+# --- FILTRO DE SEGURIDAD PARA EL CORREO ---
+# Usamos EXPRESIONES REGULARES para extraer SOLO el email (ej: nomina@dominio.com)
+# y tirar a la basura el nombre "Operadora de Trajes Españoles" para evitar el error ASCII.
+match_email = re.search(r'[\w\.-]+@[\w\.-]+', RAW_EMAIL_EMPRESA)
+EMAIL_EMPRESA_LIMPIO = match_email.group(0) if match_email else RAW_EMAIL_EMPRESA
+# ==========================================
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
-
-# --- LIMPIEZA DE LA VARIABLE EMAIL (ELIMINA LA Ñ DE LOS SECRETOS) ---
-# Extrae solo la dirección de correo (ej: nomina@trajes...) ignorando el nombre "Operadora..."
-match_email = re.search(r'[\w\.-]+@[\w\.-]+', RAW_EMAIL_EMPRESA)
-EMAIL_EMPRESA = match_email.group(0) if match_email else RAW_EMAIL_EMPRESA
-# ==========================================
 
 # --- 1. BARRA LATERAL ---
 with st.sidebar:
@@ -75,11 +77,12 @@ if 'user_data' not in st.session_state:
 
 def limpieza_nuclear_ascii(texto):
     """
-    Elimina cualquier carácter que no sea A-Z o 0-9.
-    Garantiza que el nombre del archivo sea seguro.
+    Deja solo letras A-Z y números.
+    Elimina espacios, Ñ, acentos y símbolos raros del nombre del archivo.
     """
     if not isinstance(texto, str): return "DOC"
     texto = texto.upper().replace("Ñ", "N")
+    # Solo permite A-Z y 0-9
     return re.sub(r'[^A-Z0-9]', '', texto)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
@@ -130,18 +133,18 @@ def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_emple
     try:
         msg = MIMEMultipart()
         
-        # 2. REMITENTE SEGURO (Solo el email limpio, sin nombre "Operadora...")
-        msg['From'] = EMAIL_EMPRESA
+        # 2. REMITENTE LIMPIO (Usamos la variable filtrada sin Ñ)
+        msg['From'] = EMAIL_EMPRESA_LIMPIO 
         msg['Subject'] = f"Recibo Nomina - {rfc_seguro}"
 
         destinatarios = []
         cuerpo = ""
         
-        # Cuerpo del mensaje (Sin acentos ni Ñ en el nombre de la empresa)
+        # Cuerpo del mensaje (UTF-8 permite Ñ aquí, pero el remitente no)
         if correo_empleado:
             msg['To'] = correo_empleado
-            msg['Cc'] = EMAIL_EMPRESA
-            destinatarios = [correo_empleado, EMAIL_EMPRESA]
+            msg['Cc'] = EMAIL_EMPRESA_LIMPIO
+            destinatarios = [correo_empleado, EMAIL_EMPRESA_LIMPIO]
             cuerpo = f"""Estimado colaborador,
             
             Adjunto enviamos tu recibo de nomina firmado.
@@ -150,8 +153,8 @@ def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_emple
             Atte.
             Operadora de Trajes Espanoles (RRHH)"""
         else:
-            msg['To'] = EMAIL_EMPRESA
-            destinatarios = [EMAIL_EMPRESA]
+            msg['To'] = EMAIL_EMPRESA_LIMPIO
+            destinatarios = [EMAIL_EMPRESA_LIMPIO]
             cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_seguro} ha firmado."
 
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
@@ -169,8 +172,9 @@ def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_emple
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login(EMAIL_EMPRESA, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_EMPRESA, destinatarios, msg.as_string())
+        # Usamos el email limpio para el login también
+        server.login(EMAIL_EMPRESA_LIMPIO, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_EMPRESA_LIMPIO, destinatarios, msg.as_string())
         server.quit()
         return True, "Enviado correctamente"
     except Exception as e:
@@ -300,6 +304,7 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
+                                # USAMOS LA NUEVA FUNCIÓN CON UTF-8
                                 exito, msg = enviar_correo_blindado(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
