@@ -6,7 +6,7 @@ import re
 import glob
 import smtplib
 import io
-import unicodedata  # <--- NUEVA HERRAMIENTA PARA QUITAR ACENTOS
+import unicodedata 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -70,19 +70,23 @@ if 'user_data' not in st.session_state:
 # --- 3. FUNCIONES TÉCNICAS ---
 
 def limpiar_texto(texto):
-    """Elimina saltos de línea"""
     if not isinstance(texto, str): return str(texto)
     return texto.replace('\n', ' ').replace('\r', '').strip()
 
-def normalizar_para_archivo(texto):
+def normalizar_nombre_archivo(nombre):
     """
-    Convierte 'NUÑEZ' -> 'NUNEZ' y 'GARCÍA' -> 'GARCIA'.
-    Esto es VITAL para que el archivo adjunto no rompa el correo.
+    Convierte 'NUÑEZ.pdf' -> 'NUNEZ.pdf'
+    Elimina cualquier carácter que no sea inglés básico.
     """
-    if not isinstance(texto, str): return str(texto)
-    # Normaliza unicode y elimina caracteres no ASCII (como la ñ o acentos)
-    texto_normalizado = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
-    return texto_normalizado
+    if not isinstance(nombre, str): return str(nombre)
+    
+    # 1. Reemplazos manuales comunes
+    nombre = nombre.replace("ñ", "n").replace("Ñ", "N")
+    
+    # 2. Normalización Unicode (quita acentos y símbolos raros)
+    nombre_limpio = unicodedata.normalize('NFKD', nombre).encode('ASCII', 'ignore').decode('ASCII')
+    
+    return nombre_limpio
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     # 1. Búsqueda Exacta
@@ -90,7 +94,7 @@ def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     if os.path.exists(ruta_exacta):
         return ruta_exacta
     
-    # 2. Búsqueda por RFC
+    # 2. Búsqueda por RFC (Comodín)
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -112,7 +116,7 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         img_byte_arr.seek(0)
         can.drawImage(ImageReader(img_byte_arr), POSICION_X, POSICION_Y, width=150, height=60, mask='auto')
         can.setFont("Helvetica", 6)
-        can.drawString(POSICION_X + 40, POSICION_Y - 5, "Firma Digital Nexus") 
+        can.drawString(POSICION_X + 40, POSICION_Y - 5, "Firma Digital Empleado") 
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -133,17 +137,22 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
 def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_empleado):
     nombre_limpio = limpiar_texto(nombre_empleado)
     
-    # 1. PREPARAR NOMBRE DEL ARCHIVO "SEGURO" (Sin Ñ ni acentos)
+    # --- PASO CRÍTICO: SANITIZAR NOMBRE DEL ARCHIVO ---
     nombre_archivo_original = os.path.basename(ruta_pdf)
-    nombre_archivo_seguro = normalizar_para_archivo(nombre_archivo_original)
+    nombre_archivo_seguro = normalizar_nombre_archivo(nombre_archivo_original)
+    
+    # Si por alguna razón queda vacío o da error, usar genérico
+    if not nombre_archivo_seguro:
+        nombre_archivo_seguro = "Recibo_Nomina_Firmado.pdf"
+    # --------------------------------------------------
     
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_EMPRESA
         
-        # 2. ASUNTO CON SOPORTE PARA Ñ
-        asunto_texto = f"Recibo Firmado - {nombre_limpio}"
-        msg['Subject'] = Header(asunto_texto, 'utf-8')
+        # Asunto con codificación UTF-8 explícita
+        asunto = f"Recibo Firmado - {nombre_limpio}"
+        msg['Subject'] = Header(asunto, 'utf-8')
 
         destinatarios = []
         cuerpo = ""
@@ -160,13 +169,12 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
 
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # 3. ADJUNTAR ARCHIVO CON NOMBRE SEGURO
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
         
-        # Aquí usamos el nombre seguro (NUNEZ.pdf en vez de NUÑEZ.pdf)
+        # AQUÍ OCURRÍA EL ERROR: Ahora usamos el nombre seguro
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
@@ -179,7 +187,7 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
         server.quit()
         return True, "Enviado con documento firmado"
     except Exception as e:
-        return False, str(e)
+        return False, f"Error: {str(e)}"
 
 def es_correo_valido(email):
     return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
