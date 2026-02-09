@@ -22,24 +22,23 @@ from PIL import Image
 st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
-# 📧 CONFIGURACIÓN INTELIGENTE
+# 📧 CONFIGURACIÓN
 # ==========================================
-# Aquí está el truco: Limpiamos la variable para quitar la Ñ del remitente técnico
-
-RAW_EMAIL_EMPRESA = "nomina@trajesespanoles.mx" # Valor por defecto
+# Valores por defecto (fallback)
+RAW_EMAIL = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
+# Carga desde Secrets si existen
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
-    RAW_EMAIL_EMPRESA = st.secrets["email_empresa"] # Aquí viene con "Españoles"
+    RAW_EMAIL = st.secrets["email_empresa"] # Aquí viene "Españoles..."
     PASSWORD_ADMIN = st.secrets["admin_password"]
 
-# --- FILTRO DE SEGURIDAD PARA EL CORREO ---
-# Usamos EXPRESIONES REGULARES para extraer SOLO el email (ej: nomina@dominio.com)
-# y tirar a la basura el nombre "Operadora de Trajes Españoles" para evitar el error ASCII.
-match_email = re.search(r'[\w\.-]+@[\w\.-]+', RAW_EMAIL_EMPRESA)
-EMAIL_EMPRESA_LIMPIO = match_email.group(0) if match_email else RAW_EMAIL_EMPRESA
+# --- LIMPIEZA EXTREMA DEL REMITENTE ---
+# Buscamos solo la parte "usuario@dominio.com" e ignoramos el nombre con Ñ
+match = re.search(r'[\w\.-]+@[\w\.-]+', RAW_EMAIL)
+EMAIL_EMPRESA_LIMPIO = match.group(0) if match else "nomina@trajesespanoles.mx"
 # ==========================================
 
 SERVIDOR_SMTP = "smtp.ionos.com"
@@ -75,20 +74,14 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def limpieza_nuclear_ascii(texto):
-    """
-    Deja solo letras A-Z y números.
-    Elimina espacios, Ñ, acentos y símbolos raros del nombre del archivo.
-    """
+def limpieza_segura_rfc(texto):
+    """Deja solo letras y numeros para el nombre del archivo"""
     if not isinstance(texto, str): return "DOC"
-    texto = texto.upper().replace("Ñ", "N")
-    # Solo permite A-Z y 0-9
-    return re.sub(r'[^A-Z0-9]', '', texto)
+    return re.sub(r'[^A-Z0-9]', '', texto.upper().replace("Ñ", "N"))
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
-    if os.path.exists(ruta_exacta):
-        return ruta_exacta
+    if os.path.exists(ruta_exacta): return ruta_exacta
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -125,37 +118,41 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Nombre de archivo seguro (Solo RFC)
-    rfc_seguro = limpieza_nuclear_ascii(rfc_empleado)
-    nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf"
+def enviar_correo_final(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. PREPARACIÓN DE NOMBRES SEGUROS
+    rfc_limpio = limpieza_segura_rfc(rfc_empleado)
+    nombre_archivo_seguro = f"Recibo_{rfc_limpio}.pdf" # Ej: Recibo_ABCD123.pdf
     
     try:
         msg = MIMEMultipart()
         
-        # 2. REMITENTE LIMPIO (Usamos la variable filtrada sin Ñ)
-        msg['From'] = EMAIL_EMPRESA_LIMPIO 
-        msg['Subject'] = f"Recibo Nomina - {rfc_seguro}"
+        # 2. EL CAMBIO CLAVE: Usamos EMAIL_EMPRESA_LIMPIO
+        # Esto pone "nomina@trajes..." en lugar de "Operadora... Españoles <...>"
+        # ¡Adiós al error de la posición 38!
+        msg['From'] = EMAIL_EMPRESA_LIMPIO
+        
+        msg['Subject'] = f"Recibo Nomina - {rfc_limpio}"
 
         destinatarios = []
         cuerpo = ""
         
-        # Cuerpo del mensaje (UTF-8 permite Ñ aquí, pero el remitente no)
+        # Cuerpo del mensaje (Aquí sí podemos usar acentos y Ñ porque va en UTF-8)
         if correo_empleado:
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA_LIMPIO
             destinatarios = [correo_empleado, EMAIL_EMPRESA_LIMPIO]
-            cuerpo = f"""Estimado colaborador,
+            cuerpo = f"""Estimado colaborador(a),
             
-            Adjunto enviamos tu recibo de nomina firmado.
+            Adjunto enviamos tu recibo de nómina firmado digitalmente.
             RFC: {rfc_empleado}
             
             Atte.
-            Operadora de Trajes Espanoles (RRHH)"""
+            Operadora de Trajes Españoles
+            Departamento de Recursos Humanos"""
         else:
             msg['To'] = EMAIL_EMPRESA_LIMPIO
             destinatarios = [EMAIL_EMPRESA_LIMPIO]
-            cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_seguro} ha firmado."
+            cuerpo = f"AVISO: El empleado con RFC {rfc_limpio} firmó (sin correo personal)."
 
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
@@ -172,7 +169,6 @@ def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_emple
         server.ehlo()
         server.starttls()
         server.ehlo()
-        # Usamos el email limpio para el login también
         server.login(EMAIL_EMPRESA_LIMPIO, EMAIL_PASSWORD)
         server.sendmail(EMAIL_EMPRESA_LIMPIO, destinatarios, msg.as_string())
         server.quit()
@@ -304,8 +300,8 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # USAMOS LA NUEVA FUNCIÓN CON UTF-8
-                                exito, msg = enviar_correo_blindado(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                # USAMOS LA NUEVA FUNCIÓN FINAL
+                                exito, msg = enviar_correo_final(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
