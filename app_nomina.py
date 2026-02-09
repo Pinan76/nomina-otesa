@@ -72,23 +72,18 @@ def limpiar_texto(texto):
     return texto.replace('\n', ' ').replace('\r', '').strip()
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
-    """
-    Estrategia de búsqueda blindada:
-    1. Busca por nombre exacto.
-    2. Si falla, busca cualquier PDF que tenga el RFC en el nombre.
-    """
-    # Opción A: Ruta exacta (La más rápida)
+    # Opción A: Ruta exacta
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta):
         return ruta_exacta
     
-    # Opción B: Búsqueda por RFC (El salvavidas)
-    # Busca en la carpeta recibos cualquier archivo que contenga el RFC
+    # Opción B: Búsqueda por RFC
+    if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
     
     if coincidencias:
-        return coincidencias[0] # Retorna el primero que encuentre
+        return coincidencias[0]
     
     return None
 
@@ -212,4 +207,126 @@ else:
 
 # --- PESTAÑA 1: EMPLEADO ---
 with tab1:
-    if not st.session
+    if not st.session_state.autenticado:
+        st.subheader("Acceso Personal")
+        rfc_in = st.text_input("Ingresa tu RFC").upper()
+        
+        if rfc_in and os.path.exists('Control_Maestro.csv'):
+            df_m = pd.read_csv('Control_Maestro.csv')
+            emp = df_m[df_m['rfc'] == rfc_in]
+            
+            if not emp.empty:
+                e = emp.iloc[0]
+                st.info(f"Colaborador: **{e['name']}**")
+                
+                if not gestionar_credenciales(rfc_in):
+                    p1 = st.text_input("Crear Contraseña", type="password")
+                    if st.button("Registrar"):
+                        gestionar_credenciales(rfc_in, p1, "registro")
+                        st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
+                else:
+                    p_log = st.text_input("Contraseña", type="password")
+                    if st.button("Entrar"):
+                        if gestionar_credenciales(rfc_in, p_log, "login"):
+                            st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
+                        else: st.error("Clave incorrecta")
+            else: st.warning("RFC no encontrado en base de datos.")
+        elif rfc_in:
+            st.error("⚠️ Base de datos no cargada (Esperando Admin).")
+            
+    else:
+        u = st.session_state.user_data
+        st.success(f"Bienvenido: {u['name']}")
+        c_izq, c_der = st.columns([2, 1])
+        with c_izq:
+            st.subheader("Tu Recibo")
+            
+            # --- NUEVA LÓGICA DE BÚSQUEDA ---
+            archivo_encontrado = buscar_archivo_inteligente(u['file'], u['rfc'])
+            
+            if archivo_encontrado:
+                with open(archivo_encontrado, "rb") as f: b64 = base64.b64encode(f.read()).decode('utf-8')
+                st.markdown(f'<embed src="data:application/pdf;base64,{b64}" width="100%" height="600" type="application/pdf">', unsafe_allow_html=True)
+                
+                st.write("---")
+                st.write("**Firma aquí:**")
+                canvas = st_canvas(stroke_width=2, height=150, key="f")
+                
+                if st.button("✅ Firmar y Enviar"):
+                    if canvas.image_data is not None:
+                        with st.spinner("Procesando firma..."):
+                            ruta_firmado = generar_pdf_firmado(archivo_encontrado, canvas.image_data)
+                            if ruta_firmado:
+                                registrar_firma(st.session_state.rfc_actual, os.path.basename(ruta_firmado))
+                                correo_empleado = None
+                                if os.path.exists('Directorio_Contactos.csv'):
+                                    df_c = pd.read_csv('Directorio_Contactos.csv')
+                                    match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
+                                    if not match.empty: correo_empleado = match.iloc[0]['email']
+                                exito, msg = enviar_correo_con_copia_obligatoria(correo_empleado, ruta_firmado, u['name'])
+                                if exito:
+                                    st.success("✅ ¡Listo! Recibo firmado enviado.")
+                                    st.balloons()
+                                else: st.error(f"Error envío: {msg}")
+            else: 
+                st.error("Archivo PDF no encontrado en el servidor.")
+                st.warning(f"Buscamos: {u['file']} o el RFC {u['rfc']}")
+        
+        with c_der:
+            with st.expander("📧 Configuración", expanded=True):
+                nc = st.text_input("Correo Personal")
+                if st.button("Guardar Email"):
+                    if es_correo_valido(nc):
+                        guardar_contacto(st.session_state.rfc_actual, nc)
+                        st.success("Guardado.")
+                        st.rerun()
+            if st.button("Salir"): st.session_state.autenticado = False; st.rerun()
+
+# --- PESTAÑA 2: ADMIN ---
+if acceso_concedido and tab2:
+    with tab2:
+        st.header("Panel Administrativo")
+        
+        # VISOR DE ARCHIVOS EN NUBE (DEBUG)
+        with st.expander("📂 Explorador de Archivos (DEBUG)", expanded=False):
+            st.write("Archivos guardados actualmente en la carpeta 'recibos':")
+            if os.path.exists("recibos"):
+                archivos_en_nube = os.listdir("recibos")
+                st.write(archivos_en_nube)
+            else:
+                st.write("❌ La carpeta 'recibos' no existe.")
+
+        if os.path.exists('Control_Maestro.csv'):
+            df_m = pd.read_csv('Control_Maestro.csv')
+            df_firmas = pd.read_csv('Estado_Firmas.csv') if os.path.exists('Estado_Firmas.csv') else pd.DataFrame(columns=['rfc'])
+            firmados = df_m['rfc'].isin(df_firmas['rfc']).sum()
+            c1, c2 = st.columns(2)
+            c1.metric("Empleados Cargados", len(df_m)); c2.metric("Firmas Recibidas", firmados)
+            
+            st.subheader("Estado de Firmas")
+            df_status = df_m[['name', 'rfc']].copy()
+            df_status['Firmado'] = df_status['rfc'].isin(df_firmas['rfc']).map({True: '✅ SI', False: '❌ NO'})
+            def color_rojo(val): return f'color: {"red" if val == "❌ NO" else "green"}'
+            st.dataframe(df_status.style.applymap(color_rojo, subset=['Firmado']), use_container_width=True)
+
+        st.write("---")
+        st.subheader("Carga de Nómina")
+        uploaded = st.file_uploader("Subir PDFs Semanales", accept_multiple_files=True)
+        
+        if st.button("Procesar Archivos"):
+            if uploaded:
+                if not os.path.exists("recibos"): os.makedirs("recibos")
+                datos = []
+                for f in uploaded:
+                    try:
+                        with open(os.path.join("recibos", f.name), "wb") as out: out.write(f.getbuffer())
+                        datos.append(extraer_datos_limpios(f))
+                    except: pass
+                if datos:
+                    if os.path.exists('Control_Maestro.csv'):
+                        df_ex = pd.read_csv('Control_Maestro.csv')
+                        df_fin = pd.concat([df_ex, pd.DataFrame(datos)]).drop_duplicates(subset=['rfc'], keep='last')
+                    else: df_fin = pd.DataFrame(datos)
+                    df_fin.to_csv('Control_Maestro.csv', index=False)
+                    st.success(f"✅ Se cargaron {len(datos)} empleados.")
+                    st.rerun()
