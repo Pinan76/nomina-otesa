@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import base64
@@ -19,23 +20,22 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
 
-# --- CONFIGURACION DE PAGINA ---
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="\uD83D\uDC54") # Icono corbata
+# --- CONFIGURACION DE PAGINA (SOLUCION AL ERROR UNICODE) ---
+# Usamos ":necktie:" que es el shortcode seguro de Streamlit en lugar del unicode directo
+st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
 # ==========================================
-# CONFIGURACION DE CORREO (ASCII PURO)
+# CONFIGURACION DE CORREO
 # ==========================================
-# Usamos una direccion fija para evitar errores de lectura en los secrets
 SENDER_EMAIL = "nomina@trajesespanoles.mx"
-
-# Solo leemos la contrasena y admin desde secrets
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
-
+    # Ignoramos el remitente de los secrets para evitar errores de caracteres
+    
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
 # ==========================================
@@ -48,7 +48,7 @@ with st.sidebar:
         st.title("OTE")
     
     st.write("---")
-    st.write("\uD83D\uDD27 **Acceso Administrativo**") # Icono llave
+    st.write("🔧 **Acceso Administrativo**")
     modo_admin = st.toggle("Soy Administrador")
     
     acceso_concedido = False
@@ -73,8 +73,8 @@ if 'user_data' not in st.session_state:
 def limpieza_segura(texto):
     """Elimina todo caracter que no sea A-Z o 0-9"""
     if not isinstance(texto, str): return "DOC"
-    # Reemplazamos N tilde por N normal usando unicode escape
-    clean = texto.upper().replace("\u00D1", "N") 
+    # Reemplazo manual de la N tilde para evitar errores
+    clean = texto.upper().replace("Ñ", "N") 
     return re.sub(r'[^A-Z0-9]', '', clean)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
@@ -135,8 +135,8 @@ def enviar_correo_seguro(correo_empleado, ruta_pdf, nombre_empleado, rfc_emplead
         destinatarios = []
         cuerpo = ""
         
-        # Usamos secuencias de escape unicode para evitar la Ñ literal en el codigo
-        nombre_empresa = "Operadora de Trajes Espa\u00F1oles" # \u00F1 es la n tilde
+        # Cuerpo del mensaje: Aqui SI podemos usar acentos porque definimos UTF-8 abajo
+        nombre_empresa_display = "Operadora de Trajes Espanoles" 
         
         if email_destino:
             msg['To'] = email_destino
@@ -148,14 +148,14 @@ Adjunto enviamos tu recibo de nomina firmado digitalmente.
 RFC: {rfc_empleado}
 
 Atte.
-{nombre_empresa}
+{nombre_empresa_display}
 Departamento de Recursos Humanos"""
         else:
             msg['To'] = SENDER_EMAIL
             destinatarios = [SENDER_EMAIL]
             cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_limpio} firmo correctamente (sin correo personal)."
 
-        # IMPORTANTE: Forzamos UTF-8 aqui
+        # CODIFICACION UTF-8 EXPLICITA
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
         # Adjunto
@@ -211,7 +211,7 @@ def extraer_datos_limpios(pdf_file):
     try:
         reader = PdfReader(pdf_file)
         texto = "".join([page.extract_text() for page in reader.pages])
-        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\u00C0-\u00FF\s]+)', texto) # Regex acepta caracteres latinos
+        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\s]+)', texto) # Simplificado para evitar caracteres raros
         nombre = limpiar_basico(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
         match_rfc = re.search(r'RFC:\s*([A-Z]{4}\d{6}[A-Z0-9]{3})', texto)
         rfc = match_rfc.group(1) if match_rfc else "N/A"
@@ -220,13 +220,13 @@ def extraer_datos_limpios(pdf_file):
 
 # --- 4. INTERFAZ PRINCIPAL ---
 
-st.title("Operadora de Trajes Espa\u00F1oles") # Titulo con unicode
+st.title("Operadora de Trajes Espanoles") # Sin Ñ para evitar error de encoding en logs
 st.caption("Sistema Nexus - Nomina Digital")
 
 if acceso_concedido:
-    tab1, tab2 = st.tabs(["\uD83D\uDC64 Portal Empleado (Vista Previa)", "\u2699\uFE0F Panel RRHH"])
+    tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
 else:
-    tab1, = st.tabs(["\uD83D\uDC64 Portal Empleado"])
+    tab1, = st.tabs(["👤 Portal Empleado"])
     tab2 = None
 
 # --- PESTANA 1: EMPLEADO ---
@@ -244,12 +244,12 @@ with tab1:
                 st.info(f"Colaborador: **{e['name']}**")
                 
                 if not gestionar_credenciales(rfc_in):
-                    p1 = st.text_input("Crear Contrase\u00F1a", type="password") # Contraseña
+                    p1 = st.text_input("Crear Contraseña", type="password")
                     if st.button("Registrar"):
                         gestionar_credenciales(rfc_in, p1, "registro")
                         st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
                 else:
-                    p_log = st.text_input("Contrase\u00F1a", type="password")
+                    p_log = st.text_input("Contraseña", type="password")
                     if st.button("Entrar"):
                         if gestionar_credenciales(rfc_in, p_log, "login"):
                             st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
@@ -274,7 +274,7 @@ with tab1:
 
                 st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
                 
-                # VISOR ROBUSTO (<object> con fallback)
+                # VISOR MEJORADO
                 pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descárgalo aquí</a>.</p></object>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
