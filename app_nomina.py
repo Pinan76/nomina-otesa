@@ -10,6 +10,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from email.utils import parseaddr # <--- HERRAMIENTA CLAVE
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from datetime import datetime
@@ -24,21 +25,26 @@ st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page
 # ==========================================
 # 📧 CONFIGURACIÓN BLINDADA
 # ==========================================
-# IMPORTANTE: Aquí definimos el correo "limpio" manualmente para evitar
-# que el nombre "Españoles" en los secrets rompa el envío.
-
-EMAIL_REMITENTE = "nomina@trajesespanoles.mx"  # <--- ESTO EVITA EL ERROR DE LA Ñ
+# Valores por defecto
+RAW_EMAIL = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
-# Solo leemos la contraseña de los secrets (si existen), el correo lo mantenemos fijo arriba
+# Carga segura desde la nube
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
+    RAW_EMAIL = st.secrets["email_empresa"] # Aquí viene el nombre con Ñ que causa el error
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
+
+# --- LIMPIEZA QUIRÚRGICA DEL REMITENTE ---
+# Esto separa "Nombre <email>" y se queda SOLO con el email.
+# Elimina el error de la Ñ en la posición 38 del encabezado.
+nombre_basura, EMAIL_LIMPIO = parseaddr(RAW_EMAIL)
+if not EMAIL_LIMPIO: EMAIL_LIMPIO = "nomina@trajesespanoles.mx"
+# ==========================================
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
-# ==========================================
 
 # --- 1. BARRA LATERAL ---
 with st.sidebar:
@@ -71,14 +77,15 @@ if 'user_data' not in st.session_state:
 # --- 3. FUNCIONES TÉCNICAS ---
 
 def limpieza_segura_rfc(texto):
-    """Deja solo letras y numeros para el nombre del archivo"""
+    """Deja solo letras y números para nombres de archivo"""
     if not isinstance(texto, str): return "DOC"
-    # Convertimos Ñ a N y quitamos todo lo que no sea alfanumérico
     return re.sub(r'[^A-Z0-9]', '', texto.upper().replace("Ñ", "N"))
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
+    # Intentamos ruta exacta
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta): return ruta_exacta
+    # Intentamos búsqueda por RFC
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -116,26 +123,24 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         return None
 
 def enviar_correo_final(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Nombre de archivo 100% seguro (Sin Ñ, sin espacios)
     rfc_limpio = limpieza_segura_rfc(rfc_empleado)
     nombre_archivo_seguro = f"Recibo_{rfc_limpio}.pdf"
     
     try:
         msg = MIMEMultipart()
         
-        # 2. ENCABEZADOS TÉCNICOS (Aquí es donde fallaba la posición 38)
-        # Usamos la variable EMAIL_REMITENTE que definimos arriba manual
-        msg['From'] = EMAIL_REMITENTE 
+        # AQUÍ ESTÁ LA MAGIA: Usamos el email limpio (sin nombre de empresa)
+        msg['From'] = EMAIL_LIMPIO 
         msg['Subject'] = f"Recibo Nomina - {rfc_limpio}"
 
         destinatarios = []
         cuerpo = ""
         
-        # 3. CUERPO DEL CORREO (Aquí SÍ podemos usar Ñ y acentos)
+        # En el cuerpo SÍ podemos poner acentos porque usamos UTF-8
         if correo_empleado:
             msg['To'] = correo_empleado
-            msg['Cc'] = EMAIL_REMITENTE
-            destinatarios = [correo_empleado, EMAIL_REMITENTE]
+            msg['Cc'] = EMAIL_LIMPIO
+            destinatarios = [correo_empleado, EMAIL_LIMPIO]
             cuerpo = f"""Estimado colaborador(a),
             
             Adjunto enviamos tu recibo de nómina firmado digitalmente.
@@ -145,14 +150,13 @@ def enviar_correo_final(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado
             Operadora de Trajes Españoles
             Departamento de Recursos Humanos"""
         else:
-            msg['To'] = EMAIL_REMITENTE
-            destinatarios = [EMAIL_REMITENTE]
+            msg['To'] = EMAIL_LIMPIO
+            destinatarios = [EMAIL_LIMPIO]
             cuerpo = f"AVISO: El empleado con RFC {rfc_limpio} firmó (sin correo personal)."
 
-        # Codificamos el cuerpo en UTF-8 explícitamente
+        # Codificación UTF-8 explícita
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # 4. ADJUNTAR ARCHIVO
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
@@ -160,13 +164,13 @@ def enviar_correo_final(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # 5. CONEXIÓN Y ENVÍO
+        # Envío
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login(EMAIL_REMITENTE, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_REMITENTE, destinatarios, msg.as_string())
+        server.login(EMAIL_LIMPIO, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_LIMPIO, destinatarios, msg.as_string())
         server.quit()
         return True, "Enviado correctamente"
     except Exception as e:
@@ -266,20 +270,23 @@ with tab1:
                     pdf_bytes = f.read()
                     base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
 
-                st.info(f"📄 Visualizando archivo: {os.path.basename(archivo_encontrado)}")
-                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
+                # --- VISOR PDF MEJORADO ---
+                st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
                 
-                st.write("---")
-                col_d1, col_d2 = st.columns([3, 1])
-                with col_d1:
-                    st.download_button(
-                        label="⬇️ Descargar PDF (Si no puedes verlo arriba)",
-                        data=pdf_bytes,
-                        file_name=os.path.basename(archivo_encontrado),
-                        mime="application/pdf",
-                    )
-
+                # Botón de descarga GRANDE (Plan B por si el visor falla)
+                st.download_button(
+                    label="📥 SI NO VES EL PDF, HAZ CLIC AQUÍ PARA DESCARGARLO",
+                    data=pdf_bytes,
+                    file_name=os.path.basename(archivo_encontrado),
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+                
+                # Intentamos mostrarlo
+                pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
+                st.markdown(pdf_display, unsafe_allow_html=True)
+                # ---------------------------
+                
                 st.write("---")
                 st.write("**Firma Digital:**")
                 canvas = st_canvas(stroke_width=2, height=150, key="f")
@@ -296,7 +303,6 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # ¡Llamamos a la nueva función blindada!
                                 exito, msg = enviar_correo_final(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
