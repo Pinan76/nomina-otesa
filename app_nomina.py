@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import base64
 import os
-import re
+import re # <--- Importante para la limpieza estricta
 import glob
 import smtplib
 import io
@@ -67,14 +67,20 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def limpiar_string_extremo(texto):
+def limpieza_nuclear_ascii(texto):
     """
-    Función Paranoica: Elimina TODO lo que no sea A-Z o 0-9.
-    Esto asegura que el nombre del archivo sea 100% seguro.
+    Usa Expresiones Regulares (Regex) para permitir SOLAMENTE
+    letras de la A a la Z y números.
+    La Ñ y los acentos son eliminados instantáneamente.
     """
     if not isinstance(texto, str): return "DOC"
-    # Solo deja letras y números
-    return "".join(c for c in texto if c.isalnum())
+    
+    # Paso 1: Reemplazo manual amigable (para que Nuñez sea Nunez y no Nuez)
+    texto = texto.upper().replace("Ñ", "N").replace("Á", "A").replace("É", "E").replace("Í", "I").replace("Ó", "O").replace("Ú", "U")
+    
+    # Paso 2: REGEX ESTRICTO (Solo A-Z y 0-9)
+    # Todo lo que no sea una letra inglesa o numero se borra
+    return re.sub(r'[^A-Z0-9]', '', texto)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
@@ -116,10 +122,12 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_blindado_utf8(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. PREPARACIÓN DE DATOS (Limpieza)
-    rfc_seguro = limpiar_string_extremo(rfc_empleado)
-    nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf" # Nombre 100% seguro
+def enviar_correo_definitivo(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. Limpieza estricta de variables para el nombre del archivo
+    rfc_seguro = limpieza_nuclear_ascii(rfc_empleado)
+    
+    # Nombre del archivo FINAL: Recibo_ABCD123456.pdf (Sin Ñ, sin espacios, sin P)
+    nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf"
     
     try:
         msg = MIMEMultipart()
@@ -129,6 +137,7 @@ def enviar_correo_blindado_utf8(correo_empleado, ruta_pdf, nombre_empleado, rfc_
         destinatarios = []
         cuerpo = ""
         
+        # Cuerpo del mensaje en texto plano UTF-8 (Aquí sí podemos poner acentos en el texto)
         if correo_empleado:
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
@@ -136,7 +145,7 @@ def enviar_correo_blindado_utf8(correo_empleado, ruta_pdf, nombre_empleado, rfc_
             cuerpo = f"""Estimado colaborador,
             
             Adjunto enviamos tu recibo de nomina firmado.
-            RFC: {rfc_seguro}
+            RFC: {rfc_empleado}
             
             Atte.
             Operadora de Trajes Espanoles (RRHH)"""
@@ -145,20 +154,19 @@ def enviar_correo_blindado_utf8(correo_empleado, ruta_pdf, nombre_empleado, rfc_
             destinatarios = [EMAIL_EMPRESA]
             cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_seguro} ha firmado."
 
-        # 2. AQUÍ ESTÁ EL TRUCO: Forzamos UTF-8
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # 3. ADJUNTAR ARCHIVO
+        # ADJUNTAR ARCHIVO
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
         
-        # Nombre del archivo garantizado sin caracteres raros
+        # EL PASO CRITICO: Usar el nombre de archivo saneado
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # 4. ENVÍO
+        # ENVÍO
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
@@ -295,7 +303,7 @@ with tab1:
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
                                 # USAMOS LA NUEVA FUNCIÓN CON UTF-8
-                                exito, msg = enviar_correo_blindado_utf8(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                exito, msg = enviar_correo_definitivo(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
