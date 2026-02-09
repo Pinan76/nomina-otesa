@@ -19,7 +19,7 @@ from reportlab.lib.utils import ImageReader
 from PIL import Image
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="OTESA - Operadora de Trajes", layout="wide", page_icon="🧵")
+st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
 # 📧 CONFIGURACIÓN
@@ -67,23 +67,14 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def sanear_totalmente(texto):
+def limpiar_string_extremo(texto):
     """
-    Elimina cualquier carácter que no sea inglés básico.
-    Convierte Ñ -> N, ó -> o, etc.
+    Función Paranoica: Elimina TODO lo que no sea A-Z o 0-9.
+    Esto asegura que el nombre del archivo sea 100% seguro.
     """
-    if not isinstance(texto, str): return str(texto)
-    
-    # Reemplazos manuales
-    texto = texto.replace("Ñ", "N").replace("ñ", "n")
-    texto = texto.replace("Á", "A").replace("á", "a")
-    texto = texto.replace("É", "E").replace("é", "e")
-    texto = texto.replace("Í", "I").replace("í", "i")
-    texto = texto.replace("Ó", "O").replace("ó", "o")
-    texto = texto.replace("Ú", "U").replace("ú", "u")
-    
-    # Filtro final: Solo permite letras, números y espacios básicos
-    return "".join(c for c in texto if c.isalnum() or c in " ._-")
+    if not isinstance(texto, str): return "DOC"
+    # Solo deja letras y números
+    return "".join(c for c in texto if c.isalnum())
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
@@ -96,8 +87,8 @@ def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     return None
 
 def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
-    POSICION_X = 430  
-    POSICION_Y = 240 
+    POSICION_X = 460  
+    POSICION_Y = 300 
     try:
         packet = io.BytesIO()
         can = pdf_canvas.Canvas(packet, pagesize=letter)
@@ -107,7 +98,7 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         img_byte_arr.seek(0)
         can.drawImage(ImageReader(img_byte_arr), POSICION_X, POSICION_Y, width=150, height=60, mask='auto')
         can.setFont("Helvetica", 6)
-        can.drawString(POSICION_X + 40, POSICION_Y - 5, "Firma Digital Empleado") 
+        can.drawString(POSICION_X + 10, POSICION_Y - 10, "Firma Digital Nexus") 
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -125,50 +116,49 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_blindado(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Limpieza nuclear de nombres
-    nombre_seguro = sanear_totalmente(nombre_empleado)
-    rfc_seguro = sanear_totalmente(rfc_empleado)
+def enviar_correo_blindado_utf8(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. PREPARACIÓN DE DATOS (Limpieza)
+    rfc_seguro = limpiar_string_extremo(rfc_empleado)
+    nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf" # Nombre 100% seguro
     
-    # 2. Asunto y Archivo 100% ASCII
-    asunto_seguro = f"Recibo de Nomina - {rfc_seguro}"
-    nombre_archivo_seguro = f"Recibo_{rfc_seguro}.pdf"
-
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_EMPRESA
-        msg['Subject'] = asunto_seguro
+        msg['Subject'] = f"Recibo Nomina - {rfc_seguro}" # Asunto seguro
 
         destinatarios = []
         cuerpo = ""
         
-        # 3. Cuerpo del mensaje sin acentos ni Ñ (Operadora de Trajes Espanoles)
         if correo_empleado:
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
             destinatarios = [correo_empleado, EMAIL_EMPRESA]
-            cuerpo = f"""Estimado colaborador {rfc_seguro},
+            cuerpo = f"""Estimado colaborador,
             
             Adjunto enviamos tu recibo de nomina firmado.
+            RFC: {rfc_seguro}
             
             Atte.
             Operadora de Trajes Espanoles (RRHH)"""
         else:
             msg['To'] = EMAIL_EMPRESA
             destinatarios = [EMAIL_EMPRESA]
-            cuerpo = f"AVISO: El empleado con RFC {rfc_seguro} firmo el recibo (sin correo personal)."
+            cuerpo = f"AVISO DE SISTEMA:\nEl empleado con RFC {rfc_seguro} ha firmado."
 
-        msg.attach(MIMEText(cuerpo, 'plain'))
+        # 2. AQUÍ ESTÁ EL TRUCO: Forzamos UTF-8
+        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # 4. Adjunto
+        # 3. ADJUNTAR ARCHIVO
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
+        
+        # Nombre del archivo garantizado sin caracteres raros
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # 5. Envío
+        # 4. ENVÍO
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
@@ -223,7 +213,7 @@ def extraer_datos_limpios(pdf_file):
 # --- 4. INTERFAZ PRINCIPAL ---
 
 st.title("Operadora de Trajes Españoles")
-st.caption("Sistema OTESA - Nómina Digital")
+st.caption("Sistema Nexus - Nómina Digital")
 
 if acceso_concedido:
     tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
@@ -304,8 +294,8 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # PASAMOS EL RFC AQUÍ Y USAMOS LA VERSIÓN BLINDADA
-                                exito, msg = enviar_correo_blindado(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                # USAMOS LA NUEVA FUNCIÓN CON UTF-8
+                                exito, msg = enviar_correo_blindado_utf8(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("✅ ¡Listo! Recibo firmado enviado.")
