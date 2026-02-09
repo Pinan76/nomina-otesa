@@ -6,9 +6,11 @@ import re
 import glob
 import smtplib
 import io
+import unicodedata  # <--- NUEVA HERRAMIENTA PARA QUITAR ACENTOS
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
+from email.header import Header
 from email import encoders
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
@@ -19,7 +21,7 @@ from reportlab.lib.utils import ImageReader
 from PIL import Image
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Nexus - Operadora de Trajes", layout="wide", page_icon="🧵")
+st.set_page_config(page_title="OTESA - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
 # 📧 CONFIGURACIÓN SEGURA (NUBE + LOCAL)
@@ -39,8 +41,8 @@ PUERTO_SMTP = 587
 
 # --- 1. BARRA LATERAL ---
 with st.sidebar:
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=200)
+    if os.path.exists("logo.jpg"):
+        st.image("logo.jpg", width=200)
     else:
         st.title("OTE")
     
@@ -68,17 +70,27 @@ if 'user_data' not in st.session_state:
 # --- 3. FUNCIONES TÉCNICAS ---
 
 def limpiar_texto(texto):
+    """Elimina saltos de línea"""
     if not isinstance(texto, str): return str(texto)
     return texto.replace('\n', ' ').replace('\r', '').strip()
 
+def normalizar_para_archivo(texto):
+    """
+    Convierte 'NUÑEZ' -> 'NUNEZ' y 'GARCÍA' -> 'GARCIA'.
+    Esto es VITAL para que el archivo adjunto no rompa el correo.
+    """
+    if not isinstance(texto, str): return str(texto)
+    # Normaliza unicode y elimina caracteres no ASCII (como la ñ o acentos)
+    texto_normalizado = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
+    return texto_normalizado
+
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
-    """Busca primero por nombre exacto, luego por coincidencia de RFC"""
     # 1. Búsqueda Exacta
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta):
         return ruta_exacta
     
-    # 2. Búsqueda por RFC (Comodín)
+    # 2. Búsqueda por RFC
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -89,8 +101,8 @@ def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     return None
 
 def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
-    POSICION_X = 460  
-    POSICION_Y = 300 
+    POSICION_X = 430  
+    POSICION_Y = 240 
     try:
         packet = io.BytesIO()
         can = pdf_canvas.Canvas(packet, pagesize=letter)
@@ -100,7 +112,7 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
         img_byte_arr.seek(0)
         can.drawImage(ImageReader(img_byte_arr), POSICION_X, POSICION_Y, width=150, height=60, mask='auto')
         can.setFont("Helvetica", 6)
-        can.drawString(POSICION_X + 10, POSICION_Y - 10, "Firma Digital Nexus") 
+        can.drawString(POSICION_X + 40, POSICION_Y - 5, "Firma Digital Nexus") 
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -120,13 +132,22 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
 
 def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_empleado):
     nombre_limpio = limpiar_texto(nombre_empleado)
-    nombre_archivo = os.path.basename(ruta_pdf)
+    
+    # 1. PREPARAR NOMBRE DEL ARCHIVO "SEGURO" (Sin Ñ ni acentos)
+    nombre_archivo_original = os.path.basename(ruta_pdf)
+    nombre_archivo_seguro = normalizar_para_archivo(nombre_archivo_original)
+    
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_EMPRESA
-        msg['Subject'] = f"Recibo Firmado - {nombre_limpio}"
+        
+        # 2. ASUNTO CON SOPORTE PARA Ñ
+        asunto_texto = f"Recibo Firmado - {nombre_limpio}"
+        msg['Subject'] = Header(asunto_texto, 'utf-8')
+
         destinatarios = []
         cuerpo = ""
+        
         if correo_empleado:
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
@@ -137,12 +158,16 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
             destinatarios = [EMAIL_EMPRESA]
             cuerpo = f"AVISO: El empleado {nombre_limpio} firmó (sin correo personal)."
 
-        msg.attach(MIMEText(cuerpo, 'plain'))
+        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+
+        # 3. ADJUNTAR ARCHIVO CON NOMBRE SEGURO
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={nombre_archivo}")
+        
+        # Aquí usamos el nombre seguro (NUNEZ.pdf en vez de NUÑEZ.pdf)
+        part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
@@ -198,7 +223,7 @@ def extraer_datos_limpios(pdf_file):
 # --- 4. INTERFAZ PRINCIPAL ---
 
 st.title("Operadora de Trajes Españoles")
-st.caption("Sistema Nexus - Nómina Digital")
+st.caption("Sistema OTESA - Nómina Digital")
 
 if acceso_concedido:
     tab1, tab2 = st.tabs(["👤 Portal Empleado (Vista Previa)", "⚙️ Panel RRHH"])
@@ -212,7 +237,6 @@ with tab1:
         st.subheader("Acceso Personal")
         rfc_in = st.text_input("Ingresa tu RFC").upper()
         
-        # VERIFICACIÓN DE BASE DE DATOS
         if rfc_in and os.path.exists('Control_Maestro.csv'):
             df_m = pd.read_csv('Control_Maestro.csv')
             emp = df_m[df_m['rfc'] == rfc_in]
@@ -237,30 +261,23 @@ with tab1:
             st.error("⚠️ Base de datos no cargada (Esperando Admin).")
             
     else:
-        # USUARIO LOGUEADO
         u = st.session_state.user_data
         st.success(f"Bienvenido: {u['name']}")
         c_izq, c_der = st.columns([2, 1])
         
         with c_izq:
             st.subheader("Tu Recibo")
-            
-            # --- BÚSQUEDA INTELIGENTE ---
             archivo_encontrado = buscar_archivo_inteligente(u['file'], u['rfc'])
             
             if archivo_encontrado:
-                # 1. Leer el archivo binario
                 with open(archivo_encontrado, "rb") as f:
                     pdf_bytes = f.read()
                     base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
 
                 st.info(f"📄 Visualizando archivo: {os.path.basename(archivo_encontrado)}")
-
-                # 2. VISOR MEJORADO (IFRAME)
                 pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
-                # 3. BOTÓN DE EMERGENCIA (DESCARGA)
                 st.write("---")
                 col_d1, col_d2 = st.columns([3, 1])
                 with col_d1:
@@ -292,9 +309,8 @@ with tab1:
                                     st.balloons()
                                 else: st.error(f"Error envío: {msg}")
             else: 
-                st.error("Archivo PDF no encontrado en el servidor.")
-                st.warning(f"El sistema buscó: {u['file']} o el RFC {u['rfc']}")
-                st.info("Nota: Si el Admin acaba de reiniciar el sistema, debe cargar los recibos de nuevo.")
+                st.error("Archivo PDF no encontrado.")
+                st.warning(f"Buscamos: {u['file']} o el RFC {u['rfc']}")
         
         with c_der:
             with st.expander("📧 Configuración", expanded=True):
@@ -311,17 +327,13 @@ if acceso_concedido and tab2:
     with tab2:
         st.header("Panel Administrativo")
         
-        # VISOR DE ARCHIVOS EN NUBE (DEBUG)
         with st.expander("📂 Explorador de Archivos (DEBUG)", expanded=False):
-            st.write("Archivos guardados actualmente en la memoria de la nube:")
+            st.write("Archivos guardados actualmente:")
             if os.path.exists("recibos"):
                 archivos_en_nube = os.listdir("recibos")
-                if archivos_en_nube:
-                    st.write(archivos_en_nube)
-                else:
-                    st.warning("La carpeta 'recibos' está vacía. ¡Sube los PDFs!")
-            else:
-                st.error("❌ La carpeta 'recibos' no existe. ¡Sube los PDFs!")
+                if archivos_en_nube: st.write(archivos_en_nube)
+                else: st.warning("Carpeta vacía.")
+            else: st.error("Carpeta no existe.")
 
         if os.path.exists('Control_Maestro.csv'):
             df_m = pd.read_csv('Control_Maestro.csv')
@@ -338,7 +350,6 @@ if acceso_concedido and tab2:
 
         st.write("---")
         st.subheader("Carga de Nómina")
-        st.info("Paso 1: Sube los archivos aquí. Paso 2: Dale a Procesar.")
         uploaded = st.file_uploader("Subir PDFs Semanales", accept_multiple_files=True)
         
         if st.button("Procesar Archivos"):
