@@ -6,7 +6,7 @@ import re
 import glob
 import smtplib
 import io
-import unicodedata 
+# Eliminamos unicodedata y usamos limpieza manual para asegurar ASCII puro
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -24,7 +24,7 @@ from PIL import Image
 st.set_page_config(page_title="OTESA - Operadora de Trajes", layout="wide", page_icon="🧵")
 
 # ==========================================
-# 📧 CONFIGURACIÓN SEGURA (NUBE + LOCAL)
+# 📧 CONFIGURACIÓN SEGURA
 # ==========================================
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
@@ -73,28 +73,33 @@ def limpiar_texto(texto):
     if not isinstance(texto, str): return str(texto)
     return texto.replace('\n', ' ').replace('\r', '').strip()
 
-def normalizar_nombre_archivo(nombre):
+def normalizar_nombre_archivo_despiadado(nombre):
     """
-    Convierte 'NUÑEZ.pdf' -> 'NUNEZ.pdf'
-    Elimina cualquier carácter que no sea inglés básico.
+    Versión agresiva: Reemplaza manualmente caracteres latinos
+    y elimina todo lo que no sea ASCII estándar.
     """
-    if not isinstance(nombre, str): return str(nombre)
+    if not isinstance(nombre, str): return "documento.pdf"
     
-    # 1. Reemplazos manuales comunes
-    nombre = nombre.replace("ñ", "n").replace("Ñ", "N")
+    # 1. Reemplazos manuales (Infalible)
+    reemplazos = (
+        ("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
+        ("Á", "A"), ("É", "E"), ("Í", "I"), ("Ó", "O"), ("Ú", "U"),
+        ("ñ", "n"), ("Ñ", "N"), ("ü", "u"), ("Ü", "U")
+    )
+    for a, b in reemplazos:
+        nombre = nombre.replace(a, b)
     
-    # 2. Normalización Unicode (quita acentos y símbolos raros)
-    nombre_limpio = unicodedata.normalize('NFKD', nombre).encode('ASCII', 'ignore').decode('ASCII')
+    # 2. Filtrado final: Solo deja letras, números, puntos, guiones y guiones bajos
+    # Esto elimina cualquier "basura" invisible que cause el error ASCII
+    nombre_limpio = "".join(c for c in nombre if c.isalnum() or c in "._-")
     
     return nombre_limpio
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
-    # 1. Búsqueda Exacta
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
     if os.path.exists(ruta_exacta):
         return ruta_exacta
     
-    # 2. Búsqueda por RFC (Comodín)
     if not os.path.exists("recibos"): return None
     patron = os.path.join("recibos", f"*{rfc}*.pdf")
     coincidencias = glob.glob(patron)
@@ -137,22 +142,24 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
 def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_empleado):
     nombre_limpio = limpiar_texto(nombre_empleado)
     
-    # --- PASO CRÍTICO: SANITIZAR NOMBRE DEL ARCHIVO ---
+    # --- LIMPIEZA EXTREMA DEL NOMBRE DEL ARCHIVO ---
     nombre_archivo_original = os.path.basename(ruta_pdf)
-    nombre_archivo_seguro = normalizar_nombre_archivo(nombre_archivo_original)
+    nombre_archivo_seguro = normalizar_nombre_archivo_despiadado(nombre_archivo_original)
     
-    # Si por alguna razón queda vacío o da error, usar genérico
-    if not nombre_archivo_seguro:
-        nombre_archivo_seguro = "Recibo_Nomina_Firmado.pdf"
-    # --------------------------------------------------
+    # Seguridad: si quedó vacío, poner nombre genérico
+    if not nombre_archivo_seguro or len(nombre_archivo_seguro) < 5:
+        nombre_archivo_seguro = f"Recibo_Nomina_{datetime.now().strftime('%Y%m%d')}.pdf"
+    # -----------------------------------------------
     
     try:
         msg = MIMEMultipart()
         msg['From'] = EMAIL_EMPRESA
         
-        # Asunto con codificación UTF-8 explícita
-        asunto = f"Recibo Firmado - {nombre_limpio}"
-        msg['Subject'] = Header(asunto, 'utf-8')
+        # Asunto limpio
+        asunto_seguro = f"Recibo Firmado - {nombre_limpio}"
+        # Forzamos conversión a ASCII puro en el asunto si Header falla (Plan B)
+        asunto_seguro = normalizar_nombre_archivo_despiadado(asunto_seguro).replace("_", " ")
+        msg['Subject'] = asunto_seguro
 
         destinatarios = []
         cuerpo = ""
@@ -161,12 +168,13 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
             msg['To'] = correo_empleado
             msg['Cc'] = EMAIL_EMPRESA
             destinatarios = [correo_empleado, EMAIL_EMPRESA]
-            cuerpo = f"Estimado/a {nombre_limpio},\n\nSe adjunta tu recibo firmado.\n\nAtte.\nOperadora de Trajes Españoles"
+            cuerpo = f"Estimado/a Colaborador/a,\n\nSe adjunta tu recibo firmado.\n\nAtte.\nOperadora de Trajes Españoles"
         else:
             msg['To'] = EMAIL_EMPRESA
             destinatarios = [EMAIL_EMPRESA]
             cuerpo = f"AVISO: El empleado {nombre_limpio} firmó (sin correo personal)."
 
+        # Cuerpo en UTF-8 (Esto sí lo soporta bien MIMEText)
         msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
         with open(ruta_pdf, "rb") as f:
@@ -174,7 +182,7 @@ def enviar_correo_con_copia_obligatoria(correo_empleado, ruta_pdf, nombre_emplea
             part.set_payload(f.read())
         encoders.encode_base64(part)
         
-        # AQUÍ OCURRÍA EL ERROR: Ahora usamos el nombre seguro
+        # AQUÍ ES LA CLAVE: filename debe ser 100% ASCII
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
