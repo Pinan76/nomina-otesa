@@ -227,7 +227,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
         # Coordenadas OTESA
-        can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
+        can.drawImage(ImageReader(img_buffer), 430, 250, width=130, height=40, mask='auto')
         can.drawString(430, 235, "Firma Digital Empleado")
         can.save()
         packet.seek(0)
