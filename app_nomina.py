@@ -267,7 +267,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.png"): st.image("logo.png", width=200)
+    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
     st.title("OTESA V34.0")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
