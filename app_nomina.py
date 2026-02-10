@@ -260,7 +260,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.png"): st.image("logo.png", width=200)
+    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
     st.title("OTESA V35.0")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
@@ -425,7 +425,7 @@ else:
                         if canvas_firma.image_data is not None:
                             pf = firmar_pdf(path, canvas_firma.image_data)
                             if pf:
-                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", "Adjunto.", pf, "Nomina.pdf", rfc_ref=u['rfc'])
+                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", "Adjunto encontraras tu recibo correspondiente a tu semana laborada; Agradecemos tu compromiso.", pf, "Nomina.pdf", rfc_ref=u['rfc'])
                                 if ok:
                                     registrar_firma_db(u['rfc'], sel)
                                     st.success("Enviado")
