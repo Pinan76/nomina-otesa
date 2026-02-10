@@ -39,24 +39,14 @@ st.set_page_config(
     page_icon=PAGE_ICON
 )
 
-# --- 📱 TRUCO CSS PARA SCROLL EN MÓVIL ---
-# Esto habilita que puedas mover el dedo a los lados si el PDF es muy grande
+# --- 📱 CSS PARA MÓVILES ---
 st.markdown("""
     <style>
-    /* Permite scroll horizontal en contenedores desbordados */
-    .stMainBlockContainer {
-        overflow-x: auto !important;
-    }
-    .element-container {
-        overflow-x: auto !important;
-    }
-    /* Ajuste para que el canvas de firma no se deforme en movil */
-    canvas {
-        max-width: 100%;
-    }
+    .stMainBlockContainer {overflow-x: auto !important;}
+    .element-container {overflow-x: auto !important;}
+    canvas {max-width: 100%;}
     </style>
 """, unsafe_allow_html=True)
-# -----------------------------------------
 
 if 'admin' not in st.session_state: st.session_state.admin = False
 if 'user' not in st.session_state: st.session_state.user = None
@@ -142,7 +132,7 @@ def obtener_status_global():
         })
     return pd.DataFrame(status_list)
 
-# --- ESCANER INTELIGENTE ---
+# --- RECONSTRUCCION Y PURGA ---
 def reconstruir_maestro_desde_archivos():
     if not os.path.exists("recibos"): return 0
     archivos = glob.glob("recibos/**/*.pdf", recursive=True)
@@ -202,6 +192,18 @@ def purgar_semana_anterior():
         shutil.rmtree("recibos")
         os.makedirs("recibos")
     with open("Control_Maestro.csv", "w") as f: f.write("file,name,rfc\n")
+    return True
+
+# --- NUEVA FUNCIÓN: RESET DE USUARIOS DE PRUEBA ---
+def resetear_usuarios_y_contactos():
+    """Borra credenciales y correos para iniciar limpio"""
+    if os.path.exists("credenciales.csv"):
+        os.remove("credenciales.csv")
+        pd.DataFrame(columns=['rfc', 'password']).to_csv('credenciales.csv', index=False)
+        
+    if os.path.exists("Directorio_Contactos.csv"):
+        os.remove("Directorio_Contactos.csv")
+        pd.DataFrame(columns=['rfc', 'email']).to_csv('Directorio_Contactos.csv', index=False)
     return True
 
 # --- CORREO ---
@@ -291,7 +293,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    st.title("OTESA V34.0 (Mobile)")
+    st.title("OTESA V35.0 (Prod)")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -302,7 +304,7 @@ with st.sidebar:
 
 if st.session_state.admin:
     st.title("📊 Panel Admin")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor", "👥 Usuarios"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor", "👥 Usuarios (Reset)"])
     
     with tab1:
         st.subheader("Mantenimiento")
@@ -372,8 +374,20 @@ if st.session_state.admin:
                 pd.DataFrame(columns=['Fecha', 'RFC', 'Destino', 'Estado', 'Detalle']).to_csv('Bitacora_Envios.csv', index=False)
                 st.rerun()
 
+    # --- PESTAÑA DE RESET DE USUARIOS ---
     with tab5:
+        st.subheader("Gestión de Usuarios")
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
+        
+        st.write("---")
+        st.error("⚠️ ZONA DE PELIGRO: LIMPIEZA TOTAL")
+        st.write("Usa este botón para borrar todas las contraseñas y correos de las pruebas que hicimos. Los empleados tendrán que registrarse de nuevo.")
+        
+        if st.button("🗑️ BORRAR TODAS LAS CUENTAS Y CORREOS (RESET FINAL)", type="primary"):
+            resetear_usuarios_y_contactos()
+            st.success("¡Sistema limpio! Listo para despliegue masivo.")
+            time.sleep(2)
+            st.rerun()
 
 else:
     col_logo, col_titulo = st.columns([1, 4])
@@ -450,7 +464,6 @@ else:
                 
                 with st.container(border=True):
                     st.write("📄 **Vista Previa del Documento:**")
-                    st.info("💡 Tip: Si estás en celular, puedes deslizar el documento hacia los lados.")
                     if pdf_viewer:
                         pdf_viewer(input=b, width=700)
                     else: st.warning("Visor no disponible")
@@ -458,10 +471,17 @@ else:
                 if not yf:
                     st.write("---")
                     st.write("👇 **Firma en el recuadro de abajo:**")
+                    # CANDADO DE FIRMA: ELIMINADO basedata
                     canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
                     
                     if st.button("✅ Firmar y Enviar Recibo", type="primary"):
-                        if canvas_firma.image_data is not None:
+                        # VERIFICACIÓN INTELIGENTE DE TRAZOS
+                        tiene_firma = False
+                        if canvas_firma.json_data is not None:
+                            if "objects" in canvas_firma.json_data and len(canvas_firma.json_data["objects"]) > 0:
+                                tiene_firma = True
+                        
+                        if tiene_firma:
                             with st.spinner("Procesando firma y enviando correo..."):
                                 pf = firmar_pdf(path, canvas_firma.image_data)
                                 if pf:
@@ -475,7 +495,7 @@ else:
                                         st.rerun()
                                     else: st.error(f"Error correo: {t}")
                         else:
-                            st.warning("El recuadro de firma está vacío.")
+                            st.warning("⚠️ ¡Espera! El recuadro de firma está vacío. Dibuja tu firma para continuar.")
                 
                 st.download_button("⬇️ Descargar PDF", b, file_name=sel)
         else: st.info("No se encontraron recibos asignados.")
