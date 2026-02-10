@@ -23,7 +23,7 @@ except ImportError:
     pdf_viewer = None
 
 # --- 1. CONFIGURACION DE PAGINA ---
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
+st.set_page_config(page_title="OTESA - OTE", layout="wide", page_icon=":necktie:")
 
 # --- 2. INICIALIZACION DE ESTADO ---
 if 'admin' not in st.session_state: st.session_state.admin = False
@@ -132,8 +132,8 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img_buffer.seek(0)
         
         # Posición ajustada (2cm a la izquierda)
-        can.drawImage(ImageReader(img_buffer), 400, 300, width=150, height=60, mask='auto')
-        can.drawString(356, 290, "Firma Digital")
+        can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
+        can.drawString(430, 235, "Firma Digital Empleado")
         
         can.save()
         packet.seek(0)
@@ -165,7 +165,7 @@ def extraer_info_pdf(file):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.png"): st.image("logo.png", width=200)
+    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
     st.title("OTE V17.0 (Seguro)")
     
     modo_admin_activado = st.toggle("Modo Admin")
