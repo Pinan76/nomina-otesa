@@ -69,7 +69,6 @@ def obtener_status_global():
     
     for index, row in df_maestro.iterrows():
         archivo_rel = row['file']
-        # Ignorar firmados generados
         if "_FIRMADO.pdf" in archivo_rel: continue
 
         rfc = row['rfc']
@@ -90,9 +89,11 @@ def obtener_status_global():
         
     return pd.DataFrame(status_list)
 
-# --- FUNCIONES DE LIMPIEZA Y RECONSTRUCCION ---
+# --- RECONSTRUCCION INTELIGENTE (CORREGIDA) ---
 def reconstruir_maestro_desde_archivos():
     if not os.path.exists("recibos"): return 0
+    
+    # Busqueda recursiva en subcarpetas
     archivos = glob.glob("recibos/**/*.pdf", recursive=True)
     db = []
     
@@ -104,29 +105,36 @@ def reconstruir_maestro_desde_archivos():
             reader = PdfReader(ruta_completa)
             text = reader.pages[0].extract_text()
             
-            # RFC
+            # 1. Extracción de RFC (Regex Robusto)
             match_rfc = re.search(r'[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}', text)
             rfc = match_rfc.group(0) if match_rfc else "DESCONOCIDO"
             
-            # NOMBRE INTELIGENTE
-            nombre_detectado = "Colaborador"
-            if rfc != "DESCONOCIDO":
-                match_nombre_kw = re.search(r'(?:EMPLEADO|TRABAJADOR|NOMBRE)[:\s]+([A-ZÑ\s\.]+)', text)
-                if match_nombre_kw:
-                    posible = match_nombre_kw.group(1).strip()
-                    if len(posible) > 5 and not any(c.isdigit() for c in posible):
-                        nombre_detectado = posible.split('\n')[0]
-                
-                # Fallback: lineas cercanas
-                if nombre_detectado == "Colaborador":
-                    lineas = text.split('\n')
-                    for i, linea in enumerate(lineas):
-                        if rfc in linea:
-                            limpia = linea.replace(rfc, "").strip()
-                            if len(limpia) > 5 and not any(c.isdigit() for c in limpia):
-                                nombre_detectado = limpia; break
+            # 2. Extracción de NOMBRE (Lógica Híbrida)
+            nombre_final = "Colaborador"
+            
+            # INTENTO A: Buscar etiqueta "Empleado:" dentro del PDF
+            match_kw = re.search(r'(?:EMPLEADO|TRABAJADOR|NOMBRE)[:\.\s]+([A-ZÑ\s\.]+)', text)
+            if match_kw:
+                posible = match_kw.group(1).strip().split('\n')[0]
+                # Validar que sea un nombre y no basura
+                if len(posible) > 4 and sum(c.isdigit() for c in posible) < 2:
+                    nombre_final = posible
 
-            db.append({"file": nombre_relativo, "name": nombre_detectado, "rfc": rfc})
+            # INTENTO B: Si falló A, usar el NOMBRE DEL ARCHIVO (Limpio)
+            # Esto soluciona el problema de raíz si el PDF no se deja leer bien.
+            if nombre_final == "Colaborador":
+                nombre_base = os.path.basename(ruta_completa).replace(".pdf", "")
+                # Quitamos guiones y cosas raras
+                nombre_limpio = nombre_base.replace("_", " ").replace("-", " ")
+                # Si el nombre del archivo tiene letras, lo usamos
+                if any(c.isalpha() for c in nombre_limpio):
+                    nombre_final = nombre_limpio
+
+            db.append({
+                "file": nombre_relativo,
+                "name": nombre_final, # Aquí guardamos el nombre real detectado
+                "rfc": rfc
+            })
         except: continue
             
     if db:
@@ -136,18 +144,14 @@ def reconstruir_maestro_desde_archivos():
     return 0
 
 def purgar_semana_anterior():
-    """Borra todos los PDFs y limpia el maestro"""
-    # 1. Borrar PDFs
     if os.path.exists("recibos"):
-        # Borramos la carpeta entera y la volvemos a crear para que quede limpia
         shutil.rmtree("recibos")
         os.makedirs("recibos")
     
-    # 2. Borrar Maestro
     if os.path.exists("Control_Maestro.csv"):
-        os.remove("Control_Maestro.csv")
-        # Creamos uno vacio
-        pd.DataFrame(columns=['file','name','rfc']).to_csv("Control_Maestro.csv", index=False)
+        # Borramos el archivo y creamos uno vacío con encabezados
+        with open("Control_Maestro.csv", "w") as f:
+            f.write("file,name,rfc\n")
         
     return True
 
@@ -179,18 +183,22 @@ def enviar_correo_general(destinatario, asunto, cuerpo, adjunto_path=None, nombr
 # --- FUNCIONES EMPLEADO ---
 def listar_recibos_empleado_db(rfc):
     if not os.path.exists("Control_Maestro.csv"): return []
-    df = pd.read_csv("Control_Maestro.csv")
-    if df.empty: return []
-    
-    archivos_asignados = df[df['rfc'] == rfc]['file'].tolist()
-    archivos_validos = []
-    for f_rel in archivos_asignados:
-        if "_FIRMADO" in f_rel: continue
-        if os.path.exists(os.path.join("recibos", f_rel)):
-            archivos_validos.append(f_rel)
-    
-    archivos_validos.sort(reverse=True)
-    return archivos_validos
+    try:
+        df = pd.read_csv("Control_Maestro.csv")
+        if df.empty: return []
+        
+        # Filtramos por RFC
+        archivos_asignados = df[df['rfc'] == rfc]['file'].tolist()
+        
+        archivos_validos = []
+        for f_rel in archivos_asignados:
+            if "_FIRMADO" in f_rel: continue
+            if os.path.exists(os.path.join("recibos", f_rel)):
+                archivos_validos.append(f_rel)
+        
+        archivos_validos.sort(reverse=True)
+        return archivos_validos
+    except: return []
 
 def firmar_pdf(ruta_orig, firma_bytes):
     try:
@@ -201,7 +209,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
         
-        # Coordenadas OTESA
+        # COORDENADAS OTESA SOLICITADAS
         can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
         can.drawString(430, 235, "Firma Digital")
         
@@ -242,7 +250,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # ==========================================
 with st.sidebar:
     if os.path.exists("logo.png"): st.image("logo.png", width=200)
-    st.title("OTESA V27.0")
+    st.title("OTESA V28.0")
     
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password Admin", type="password")
@@ -260,32 +268,33 @@ if st.session_state.admin:
     
     with tab1:
         st.subheader("Mantenimiento Semanal")
-        
         col_a, col_b = st.columns(2)
         with col_a:
-            st.info("Paso 1: Si subiste carpetas nuevas manualmente.")
+            st.info("Paso 1: Detectar Nombres y RFCs")
             if st.button("🔄 Reconstruir Base de Datos", type="primary"):
                 with st.spinner("Indexando..."):
                     n = reconstruir_maestro_desde_archivos()
-                    st.success(f"Indexados: {n}")
+                    st.success(f"Indexados: {n} archivos.")
                     st.rerun()
         
         with col_b:
-            st.error("⚠️ ZONA DE PELIGRO: INICIO DE SEMANA")
-            st.write("Esto borra todos los recibos PDF para cargar la nueva semana.")
+            st.error("⚠️ ZONA DE PELIGRO")
             if st.button("🗑️ VACIAR SEMANA ANTERIOR"):
                 purgar_semana_anterior()
-                st.success("Sistema limpio. Listo para cargar nueva nómina.")
+                st.success("Sistema limpio.")
                 st.rerun()
 
         st.write("---")
-        st.write("**Editor Manual de Nombres:**")
+        st.write("**Verificar Nombres Detectados:**")
         if os.path.exists("Control_Maestro.csv"):
-            df = pd.read_csv("Control_Maestro.csv")
-            df_ed = st.data_editor(df, disabled=["file","rfc"], use_container_width=True)
-            if st.button("Guardar Cambios Nombres"):
-                df_ed.to_csv("Control_Maestro.csv", index=False)
-                st.success("Guardado.")
+            try:
+                df = pd.read_csv("Control_Maestro.csv")
+                # Permitir edición manual si el sistema falla
+                df_edited = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+                if st.button("Guardar Correcciones Manuales"):
+                    df_edited.to_csv("Control_Maestro.csv", index=False)
+                    st.success("Base de datos actualizada manualmente.")
+            except: st.error("Archivo DB vacío.")
 
     with tab2:
         uploaded = st.file_uploader("Subir PDFs", accept_multiple_files=True)
@@ -336,38 +345,43 @@ else:
         rfc_input = st.text_input("Ingresa tu RFC").upper()
         if rfc_input:
             if not os.path.exists("Control_Maestro.csv"):
-                st.error("Contacta a RRHH.")
+                st.error("Contacta a RRHH (DB Vacía).")
             else:
-                df_m = pd.read_csv("Control_Maestro.csv")
-                match_user = df_m[df_m['rfc'] == rfc_input]
-                if not match_user.empty:
-                    nombre = match_user.iloc[0]['name']
-                    if gestionar_credenciales(rfc_input, modo="verificar"):
-                        st.info(f"Hola **{nombre}**.")
-                        p = st.text_input("Contraseña", type="password")
-                        if st.button("Entrar"):
-                            if gestionar_credenciales(rfc_input, p, modo="login"):
-                                st.session_state.user = {'rfc': rfc_input, 'name': nombre}
-                                st.rerun()
-                            else: st.error("Incorrecto")
-                    else:
-                        st.warning(f"Bienvenido {nombre}. Regístrate.")
-                        n_p = st.text_input("Pass", type="password")
-                        c_p = st.text_input("Confirmar", type="password")
-                        if st.button("Registrar"):
-                            if n_p == c_p and n_p:
-                                gestionar_credenciales(rfc_input, n_p, modo="registro")
-                                st.session_state.user = {'rfc': rfc_input, 'name': nombre}
-                                st.rerun()
-                            else: st.error("Error pass")
-                else: st.error("RFC no encontrado.")
+                try:
+                    df_m = pd.read_csv("Control_Maestro.csv")
+                    # Buscamos coincidencias
+                    match_user = df_m[df_m['rfc'] == rfc_input]
+                    
+                    if not match_user.empty:
+                        # Extraemos el nombre (ahora será el nombre del archivo si falló la lectura)
+                        nombre_persona = match_user.iloc[0]['name']
+                        
+                        if gestionar_credenciales(rfc_input, modo="verificar"):
+                            st.info(f"Hola **{nombre_persona}**.")
+                            p = st.text_input("Contraseña", type="password")
+                            if st.button("Entrar"):
+                                if gestionar_credenciales(rfc_input, p, modo="login"):
+                                    st.session_state.user = {'rfc': rfc_input, 'name': nombre_persona}
+                                    st.rerun()
+                                else: st.error("Incorrecto")
+                        else:
+                            st.warning(f"Bienvenido {nombre_persona}. Regístrate.")
+                            n_p = st.text_input("Pass", type="password")
+                            c_p = st.text_input("Confirmar", type="password")
+                            if st.button("Registrar"):
+                                if n_p == c_p and n_p:
+                                    gestionar_credenciales(rfc_input, n_p, modo="registro")
+                                    st.session_state.user = {'rfc': rfc_input, 'name': nombre_persona}
+                                    st.rerun()
+                                else: st.error("Error pass")
+                    else: st.error("RFC no encontrado en nómina actual.")
+                except: st.error("Error leyendo base de datos.")
     else:
         u = st.session_state.user
         st.success(f"Hola: {u['name']}")
         mis_recibos = listar_recibos_empleado_db(u['rfc'])
         
         if mis_recibos:
-            # Filtro de pendientes
             df_f = cargar_db_firmas()
             pendientes = []
             firmados = []
@@ -391,6 +405,7 @@ else:
 
             if archivo_sel:
                 ruta_pdf = os.path.join("recibos", archivo_sel)
+                
                 with open(ruta_pdf, "rb") as f: bytes_pdf = f.read()
                 
                 if pdf_viewer: pdf_viewer(input=bytes_pdf, width=700)
