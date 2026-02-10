@@ -227,7 +227,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
         # Coordenadas OTESA
-        can.drawImage(ImageReader(img_buffer), 430, 250, width=130, height=40, mask='auto')
+        can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
         can.drawString(430, 235, "Firma Digital Empleado")
         can.save()
         packet.seek(0)
@@ -260,8 +260,8 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
-    st.title("OTESA V35.0")
+    # SE ELIMINÓ EL LOGO DE AQUÍ
+    st.title("OTESA V31.0 (Final)")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -347,7 +347,14 @@ if st.session_state.admin:
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
 
 else:
-    st.header("Portal Operadora de Trajes Españoles")
+    # --- NUEVO ENCABEZADO CON LOGO ---
+    col_logo, col_titulo = st.columns([1, 4])
+    with col_logo:
+        if os.path.exists("logo.jpg"): st.image("logo.jpg", width=250)
+    with col_titulo:
+        st.header("Portal Operadora de Trajes Españoles")
+    # ---------------------------------
+
     if not st.session_state.user:
         rfc = st.text_input("RFC").upper()
         if rfc:
@@ -419,17 +426,17 @@ else:
                 
                 if not yf:
                     st.write("---")
-                    # AQUÍ ESTÁ LA CORRECCIÓN CLAVE (VARIABLE CORRECTA)
                     canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
                     if st.button("Firmar y Enviar"):
                         if canvas_firma.image_data is not None:
                             pf = firmar_pdf(path, canvas_firma.image_data)
                             if pf:
-                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", "Adjunto encontraras tu recibo correspondiente a tu semana laborada; Agradecemos tu compromiso.", pf, "Nomina.pdf", rfc_ref=u['rfc'])
+                                cuerpo_correo = f"Adjunto encontraras tu recibo correspondiente a tu semana laborada; Agradecemos tu compromiso.\nRFC: {u['rfc']}"
+                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", cuerpo_correo, pf, "Nomina.pdf", rfc_ref=u['rfc'])
                                 if ok:
                                     registrar_firma_db(u['rfc'], sel)
-                                    st.success("Enviado")
-                                    st.balloons()
+                                    st.success("Enviado correctamente")
+                                    st.balloons() # <--- GLOBOS ACTIVOS AQUÍ
                                     st.rerun()
                                 else: st.error(t)
                         else:
