@@ -7,8 +7,11 @@ import re
 import glob
 import smtplib
 import io
-# LIBRERIA MODERNA (Maneja UTF-8 y Ñ automaticamente)
-from email.message import EmailMessage
+# Usamos libreria estandar robusta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from reportlab.pdfgen import canvas as pdf_canvas
@@ -16,22 +19,18 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
 
-# --- 1. CONFIGURACION PAGINA ---
+# --- 1. CONFIGURACION DE PAGINA ---
 st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
-# --- 2. INICIALIZACION DE ESTADO (ESTO ARREGLA EL ATTRIBUTE ERROR) ---
-# Es vital que esto este al principio del script
-if 'admin' not in st.session_state: 
-    st.session_state.admin = False
-if 'user' not in st.session_state: 
-    st.session_state.user = None
-if 'autenticado' not in st.session_state: 
-    st.session_state.autenticado = False
+# --- 2. INICIALIZACION DE ESTADO (CRITICO: SIEMPRE AL PRINCIPIO) ---
+if 'admin' not in st.session_state: st.session_state.admin = False
+if 'user' not in st.session_state: st.session_state.user = None
+if 'autenticado' not in st.session_state: st.session_state.autenticado = False
 
 # ==========================================
-# 🔧 ZONA DE SEGURIDAD CORREO
+# 🔧 CONFIGURACION SEGURA
 # ==========================================
-SENDER_EMAIL_FIJO = "nomina@trajesespanoles.mx"
+SENDER_EMAIL = "nomina@trajesespanoles.mx" # SIN NOMBRE, SOLO CORREO
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
@@ -43,73 +42,70 @@ SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
 # ==========================================
 
-# --- FUNCIONES DE LIMPIEZA ---
-def limpiar_texto_seguro(texto):
-    """Deja solo A-Z y 0-9"""
-    if not isinstance(texto, str): return "DOC"
-    # Reemplazo manual
-    texto = texto.upper().replace("Ñ", "N")
-    return re.sub(r'[^A-Z0-9]', '', texto)
-
-# --- FUNCION DE ENVIO MODERNA (EmailMessage) ---
-def enviar_correo_moderno(correo_destino, ruta_pdf, rfc_empleado):
-    # 1. Datos limpios
-    rfc_limpio = limpiar_texto_seguro(rfc_empleado)
-    nombre_archivo = f"Recibo_{rfc_limpio}.pdf"
-
-    # 2. Validar destino
-    email_final = None
+# --- FUNCION DE ENVIO 'A PRUEBA DE BALAS' ---
+def enviar_correo_final(correo_destino, ruta_pdf, rfc_empleado):
+    # Validar correo destino
+    destinatario = SENDER_EMAIL
     if correo_destino and "@" in str(correo_destino):
-        email_final = str(correo_destino).strip()
+        destinatario = str(correo_destino).strip()
 
     try:
-        # 3. Creacion del objeto EmailMessage
-        # Esta libreria detecta la codificacion automaticamente.
-        # No falla con Ñ en headers ni body.
-        msg = EmailMessage()
-        msg['Subject'] = f"Recibo Nomina - {rfc_limpio}"
-        msg['From'] = SENDER_EMAIL_FIJO
+        msg = MIMEMultipart()
         
-        # Cuerpo del mensaje
-        content = ""
-        if email_final:
-            msg['To'] = email_final
-            msg['Cc'] = SENDER_EMAIL_FIJO
-            content = f"""Estimado colaborador,
+        # --- ELIMINACION DE CARACTERES ILEGALES ---
+        # 1. REMITENTE: Solo el correo, nada de "Operadora..."
+        msg['From'] = SENDER_EMAIL 
+        
+        # 2. ASUNTO: Texto plano en Ingles/Espanol simple sin variables
+        # (Aqui solia estar el error si el RFC tenia Ñ)
+        msg['Subject'] = "Recibo de Nomina - Documento Firmado"
+        
+        msg['To'] = destinatario
+        msg['Cc'] = SENDER_EMAIL
 
-Adjuntamos su recibo de nomina firmado.
-RFC: {rfc_limpio}
+        # 3. CUERPO (Aqui SI podemos poner Ñ y acentos)
+        rfc_limpio = rfc_empleado.replace("Ñ", "N")
+        cuerpo = f"""Estimado colaborador,
 
-Atte.
-Operadora de Trajes Espanoles
+Adjuntamos su recibo de nomina firmado correctamente.
+RFC Referencia: {rfc_limpio}
+
+Atentamente,
+RRHH - Operadora de Trajes Espanoles
 """
-        else:
-            msg['To'] = SENDER_EMAIL_FIJO
-            content = f"AVISO: El empleado {rfc_limpio} firmo su recibo (Sin correo registrado)."
+        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        msg.set_content(content)
+        # 4. ADJUNTO (Nombre generico para evitar error de codificacion)
+        with open(ruta_pdf, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        
+        # NOMBRE DE ARCHIVO SEGURO (Sin variables)
+        part.add_header('Content-Disposition', 'attachment', filename="Recibo_Nomina_Firmado.pdf")
+        msg.attach(part)
 
-        # 4. Adjuntar PDF
-        with open(ruta_pdf, 'rb') as f:
-            file_data = f.read()
-            msg.add_attachment(file_data, maintype='application', subtype='pdf', filename=nombre_archivo)
-
-        # 5. Envio
-        with smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SENDER_EMAIL_FIJO, EMAIL_PASSWORD)
-            server.send_message(msg) # Usamos send_message, no sendmail
+        # 5. CONEXION Y ENVIO
+        server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+        
+        destinatarios_lista = [destinatario, SENDER_EMAIL]
+        server.sendmail(SENDER_EMAIL, destinatarios_lista, msg.as_string())
+        server.quit()
         
         return True, "Enviado con exito"
 
     except Exception as e:
-        return False, f"ERROR: {str(e)}"
+        return False, f"ERROR CRITICO: {str(e)}"
 
-# --- OTRAS FUNCIONES ---
+# --- FUNCIONES DE PDF ---
 def buscar_archivo(u_file, u_rfc):
+    # Intenta ruta directa
     if os.path.exists(f"recibos/{u_file}"): return f"recibos/{u_file}"
+    # Intenta buscar por RFC
     files = glob.glob(f"recibos/*{u_rfc}*.pdf")
     return files[0] if files else None
 
@@ -160,6 +156,7 @@ with st.sidebar:
     if os.path.exists("logo.png"): st.image("logo.png", width=200)
     st.title("OTE")
     
+    # Toggle Admin
     modo_admin_activado = st.toggle("Modo Admin")
     
     if modo_admin_activado:
@@ -173,7 +170,7 @@ with st.sidebar:
     else:
         st.session_state.admin = False
 
-# CONTENIDO PRINCIPAL
+# PANEL PRINCIPAL
 if st.session_state.admin:
     st.header("Panel Admin")
     uploaded = st.file_uploader("Subir Recibos", accept_multiple_files=True)
@@ -216,7 +213,8 @@ else:
             with open(pdf_path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
             
-            st.markdown(f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600"></iframe>', unsafe_allow_html=True)
+            # VISOR PDF (Usa <object> para mayor compatibilidad)
+            st.markdown(f'<object data="data:application/pdf;base64,{b64}" type="application/pdf" width="100%" height="600px"><p>Descarga el PDF abajo.</p></object>', unsafe_allow_html=True)
             
             st.write("---")
             st.write("Firma aqui:")
@@ -232,14 +230,15 @@ else:
                             match_c = dfc[dfc['rfc'] == u['rfc']]
                             if not match_c.empty: email_personal = match_c.iloc[0]['email']
                         
-                        # ENVIO MODERNO
-                        ok, msg = enviar_correo_moderno(email_personal, path_firmado, u['rfc'])
+                        # ENVIO FINAL
+                        ok, msg = enviar_correo_final(email_personal, path_firmado, u['rfc'])
                         
                         if ok:
                             st.success("Enviado correctamente!")
                             st.balloons()
                         else:
                             st.error(msg)
+                            st.write("Nota: El error 38 suele ser por caracteres especiales en el Asunto o Nombre de archivo. Hemos forzado nombres genericos para solucionarlo.")
         else:
             st.warning("PDF no encontrado.")
         
