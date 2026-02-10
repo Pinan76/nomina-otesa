@@ -39,12 +39,24 @@ st.set_page_config(
     page_icon=PAGE_ICON
 )
 
-# --- 📱 CSS PARA MÓVILES ---
+# --- 📱 CSS PARA SCROLL EN MÓVIL (MEJORADO) ---
 st.markdown("""
     <style>
-    .stMainBlockContainer {overflow-x: auto !important;}
-    .element-container {overflow-x: auto !important;}
-    canvas {max-width: 100%;}
+    /* Permite el desplazamiento horizontal en contenedores desbordados */
+    .scroll-container {
+        overflow-x: auto;
+        white-space: nowrap;
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+        padding: 5px;
+        -webkit-overflow-scrolling: touch; /* Suavidad en iOS */
+    }
+    
+    /* Ajuste para que el canvas de firma no se salga de la pantalla */
+    canvas {
+        max-width: 100% !important;
+        height: auto !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -132,7 +144,7 @@ def obtener_status_global():
         })
     return pd.DataFrame(status_list)
 
-# --- RECONSTRUCCION Y PURGA ---
+# --- ESCANER INTELIGENTE ---
 def reconstruir_maestro_desde_archivos():
     if not os.path.exists("recibos"): return 0
     archivos = glob.glob("recibos/**/*.pdf", recursive=True)
@@ -194,13 +206,10 @@ def purgar_semana_anterior():
     with open("Control_Maestro.csv", "w") as f: f.write("file,name,rfc\n")
     return True
 
-# --- NUEVA FUNCIÓN: RESET DE USUARIOS DE PRUEBA ---
 def resetear_usuarios_y_contactos():
-    """Borra credenciales y correos para iniciar limpio"""
     if os.path.exists("credenciales.csv"):
         os.remove("credenciales.csv")
         pd.DataFrame(columns=['rfc', 'password']).to_csv('credenciales.csv', index=False)
-        
     if os.path.exists("Directorio_Contactos.csv"):
         os.remove("Directorio_Contactos.csv")
         pd.DataFrame(columns=['rfc', 'email']).to_csv('Directorio_Contactos.csv', index=False)
@@ -293,7 +302,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    st.title("OTESA V35.0 (Prod)")
+    st.title("OTESA V36.0 (Final)")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -304,7 +313,7 @@ with st.sidebar:
 
 if st.session_state.admin:
     st.title("📊 Panel Admin")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor", "👥 Usuarios (Reset)"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor", "👥 Usuarios"])
     
     with tab1:
         st.subheader("Mantenimiento")
@@ -374,18 +383,14 @@ if st.session_state.admin:
                 pd.DataFrame(columns=['Fecha', 'RFC', 'Destino', 'Estado', 'Detalle']).to_csv('Bitacora_Envios.csv', index=False)
                 st.rerun()
 
-    # --- PESTAÑA DE RESET DE USUARIOS ---
     with tab5:
         st.subheader("Gestión de Usuarios")
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
-        
         st.write("---")
-        st.error("⚠️ ZONA DE PELIGRO: LIMPIEZA TOTAL")
-        st.write("Usa este botón para borrar todas las contraseñas y correos de las pruebas que hicimos. Los empleados tendrán que registrarse de nuevo.")
-        
-        if st.button("🗑️ BORRAR TODAS LAS CUENTAS Y CORREOS (RESET FINAL)", type="primary"):
+        st.error("⚠️ ZONA DE PELIGRO")
+        if st.button("🗑️ BORRAR TODAS LAS CUENTAS (RESET TOTAL)", type="primary"):
             resetear_usuarios_y_contactos()
-            st.success("¡Sistema limpio! Listo para despliegue masivo.")
+            st.success("¡Sistema limpio!")
             time.sleep(2)
             st.rerun()
 
@@ -463,39 +468,43 @@ else:
                 with open(path, "rb") as f: b = f.read()
                 
                 with st.container(border=True):
-                    st.write("📄 **Vista Previa del Documento:**")
+                    st.write("📄 **Vista Previa (Desliza si es necesario):**")
+                    # ENVOLTORIO HTML PARA SCROLL EN MÓVIL
+                    st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
                     if pdf_viewer:
-                        pdf_viewer(input=b, width=700)
+                        pdf_viewer(input=b, width=700) # Ancho fijo que fuerza el scroll
                     else: st.warning("Visor no disponible")
+                    st.markdown('</div>', unsafe_allow_html=True)
                 
                 if not yf:
                     st.write("---")
                     st.write("👇 **Firma en el recuadro de abajo:**")
-                    # CANDADO DE FIRMA: ELIMINADO basedata
+                    # Canvas SIN basedata
                     canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
                     
                     if st.button("✅ Firmar y Enviar Recibo", type="primary"):
-                        # VERIFICACIÓN INTELIGENTE DE TRAZOS
-                        tiene_firma = False
+                        # VALIDACIÓN DE TRAZOS (CANDADO)
+                        tiene_trazo = False
                         if canvas_firma.json_data is not None:
-                            if "objects" in canvas_firma.json_data and len(canvas_firma.json_data["objects"]) > 0:
-                                tiene_firma = True
+                            if len(canvas_firma.json_data.get("objects", [])) > 0:
+                                tiene_trazo = True
                         
-                        if tiene_firma:
-                            with st.spinner("Procesando firma y enviando correo..."):
-                                pf = firmar_pdf(path, canvas_firma.image_data)
-                                if pf:
-                                    cuerpo_correo = f"Estimado colaborador,\n\nAdjunto encontrarás tu recibo de nómina firmado.\nRFC: {u['rfc']}\nAtte. OTESA."
-                                    ok, t = enviar_correo_general(email_actual, f"Recibo Nómina Firmado - {u['rfc']}", cuerpo_correo, pf, "Nomina_Firmada.pdf", rfc_ref=u['rfc'])
-                                    if ok:
-                                        registrar_firma_db(u['rfc'], sel)
-                                        st.success("¡Enviado con éxito!")
-                                        st.balloons()
-                                        time.sleep(2)
-                                        st.rerun()
-                                    else: st.error(f"Error correo: {t}")
+                        if tiene_trazo:
+                            if canvas_firma.image_data is not None:
+                                with st.spinner("Procesando firma y enviando correo..."):
+                                    pf = firmar_pdf(path, canvas_firma.image_data)
+                                    if pf:
+                                        cuerpo_correo = f"Estimado colaborador,\n\nAdjunto encontrarás tu recibo de nómina firmado.\nRFC: {u['rfc']}\nAtte. OTESA."
+                                        ok, t = enviar_correo_general(email_actual, f"Recibo Nómina Firmado - {u['rfc']}", cuerpo_correo, pf, "Nomina_Firmada.pdf", rfc_ref=u['rfc'])
+                                        if ok:
+                                            registrar_firma_db(u['rfc'], sel)
+                                            st.success("¡Enviado con éxito!")
+                                            st.balloons()
+                                            time.sleep(2)
+                                            st.rerun()
+                                        else: st.error(f"Error correo: {t}")
                         else:
-                            st.warning("⚠️ ¡Espera! El recuadro de firma está vacío. Dibuja tu firma para continuar.")
+                            st.warning("⚠️ El recuadro de firma está vacío. Por favor firma para continuar.")
                 
                 st.download_button("⬇️ Descargar PDF", b, file_name=sel)
         else: st.info("No se encontraron recibos asignados.")
