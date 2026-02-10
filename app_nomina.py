@@ -7,11 +7,8 @@ import re
 import glob
 import smtplib
 import io
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email.header import Header
-from email import encoders
+# LIBRERIA MODERNA (Maneja UTF-8 y Ñ automaticamente)
+from email.message import EmailMessage
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from reportlab.pdfgen import canvas as pdf_canvas
@@ -19,22 +16,25 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
 
-# --- 1. CONFIGURACIÓN DE PÁGINA ---
+# --- 1. CONFIGURACION PAGINA ---
 st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
-# --- 2. INICIALIZACIÓN DE VARIABLES DE ESTADO (ESTO ARREGLA EL ERROR ATTRIBUTEERROR) ---
-if 'admin' not in st.session_state: st.session_state.admin = False
-if 'user' not in st.session_state: st.session_state.user = None
-if 'autenticado' not in st.session_state: st.session_state.autenticado = False
+# --- 2. INICIALIZACION DE ESTADO (ESTO ARREGLA EL ATTRIBUTE ERROR) ---
+# Es vital que esto este al principio del script
+if 'admin' not in st.session_state: 
+    st.session_state.admin = False
+if 'user' not in st.session_state: 
+    st.session_state.user = None
+if 'autenticado' not in st.session_state: 
+    st.session_state.autenticado = False
 
 # ==========================================
-# 🔧 ZONA DE SEGURIDAD CORREO (HARDCODED)
+# 🔧 ZONA DE SEGURIDAD CORREO
 # ==========================================
 SENDER_EMAIL_FIJO = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
-# Sobrescribir con secrets si existen
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
@@ -45,45 +45,37 @@ PUERTO_SMTP = 587
 
 # --- FUNCIONES DE LIMPIEZA ---
 def limpiar_texto_seguro(texto):
-    """Elimina todo lo que no sea A-Z o 0-9"""
+    """Deja solo A-Z y 0-9"""
     if not isinstance(texto, str): return "DOC"
-    # Convertimos a mayusculas y reemplazamos Ñ por N a la fuerza
-    texto = texto.upper().replace("\u00D1", "N").replace("Ñ", "N")
+    # Reemplazo manual
+    texto = texto.upper().replace("Ñ", "N")
     return re.sub(r'[^A-Z0-9]', '', texto)
 
-# --- FUNCION DE ENVIO BLINDADA ---
-def enviar_correo_nuclear(correo_destino, ruta_pdf, rfc_empleado):
-    # 1. Preparar datos 100% seguros
+# --- FUNCION DE ENVIO MODERNA (EmailMessage) ---
+def enviar_correo_moderno(correo_destino, ruta_pdf, rfc_empleado):
+    # 1. Datos limpios
     rfc_limpio = limpiar_texto_seguro(rfc_empleado)
-    nombre_archivo_seguro = "Recibo_Nomina.pdf" # Nombre genérico para evitar errores
+    nombre_archivo = f"Recibo_{rfc_limpio}.pdf"
 
-    # Validar destino
-    if not correo_destino or "@" not in str(correo_destino):
-        destinatario_final = SENDER_EMAIL_FIJO
-        es_aviso = True
-    else:
-        destinatario_final = str(correo_destino).strip()
-        es_aviso = False
+    # 2. Validar destino
+    email_final = None
+    if correo_destino and "@" in str(correo_destino):
+        email_final = str(correo_destino).strip()
 
     try:
-        msg = MIMEMultipart()
+        # 3. Creacion del objeto EmailMessage
+        # Esta libreria detecta la codificacion automaticamente.
+        # No falla con Ñ en headers ni body.
+        msg = EmailMessage()
+        msg['Subject'] = f"Recibo Nomina - {rfc_limpio}"
+        msg['From'] = SENDER_EMAIL_FIJO
         
-        # --- ENCABEZADOS (HEADERS) ---
-        # Remitente LIMPIO (Solo correo, sin nombre)
-        msg['From'] = SENDER_EMAIL_FIJO 
-        
-        # Asunto con Header object para evitar error ASCII
-        asunto = f"Recibo Nomina - {rfc_limpio}"
-        msg['Subject'] = Header(asunto, 'utf-8')
-        
-        msg['To'] = destinatario_final
-        msg['Cc'] = SENDER_EMAIL_FIJO
-
         # Cuerpo del mensaje
-        if es_aviso:
-            texto_cuerpo = f"AVISO DE SISTEMA: El empleado {rfc_limpio} firmo su recibo (No tiene correo registrado)."
-        else:
-            texto_cuerpo = f"""Estimado colaborador,
+        content = ""
+        if email_final:
+            msg['To'] = email_final
+            msg['Cc'] = SENDER_EMAIL_FIJO
+            content = f"""Estimado colaborador,
 
 Adjuntamos su recibo de nomina firmado.
 RFC: {rfc_limpio}
@@ -91,36 +83,29 @@ RFC: {rfc_limpio}
 Atte.
 Operadora de Trajes Espanoles
 """
+        else:
+            msg['To'] = SENDER_EMAIL_FIJO
+            content = f"AVISO: El empleado {rfc_limpio} firmo su recibo (Sin correo registrado)."
 
-        # Adjuntamos texto UTF-8
-        msg.attach(MIMEText(texto_cuerpo, 'plain', 'utf-8'))
+        msg.set_content(content)
 
-        # Adjuntamos PDF
-        with open(ruta_pdf, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-        encoders.encode_base64(part)
-        
-        # Header del adjunto seguro
-        part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
-        msg.attach(part)
+        # 4. Adjuntar PDF
+        with open(ruta_pdf, 'rb') as f:
+            file_data = f.read()
+            msg.add_attachment(file_data, maintype='application', subtype='pdf', filename=nombre_archivo)
 
-        # Conexión SMTP
-        server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(SENDER_EMAIL_FIJO, EMAIL_PASSWORD)
-        
-        # Envio real
-        destinatarios = [destinatario_final, SENDER_EMAIL_FIJO]
-        server.sendmail(SENDER_EMAIL_FIJO, destinatarios, msg.as_string())
-        server.quit()
+        # 5. Envio
+        with smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(SENDER_EMAIL_FIJO, EMAIL_PASSWORD)
+            server.send_message(msg) # Usamos send_message, no sendmail
         
         return True, "Enviado con exito"
 
     except Exception as e:
-        return False, f"ERROR CRITICO: {str(e)}"
+        return False, f"ERROR: {str(e)}"
 
 # --- OTRAS FUNCIONES ---
 def buscar_archivo(u_file, u_rfc):
@@ -175,26 +160,24 @@ with st.sidebar:
     if os.path.exists("logo.png"): st.image("logo.png", width=200)
     st.title("OTE")
     
-    # Toggle de Admin
     modo_admin_activado = st.toggle("Modo Admin")
     
-    # Lógica de Login Admin
     if modo_admin_activado:
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
             st.session_state.admin = True
-            st.success("Acceso Admin OK")
+            st.success("Acceso OK")
         else:
             st.session_state.admin = False
-            if pwd: st.error("Password incorrecto")
+            if pwd: st.error("Error")
     else:
         st.session_state.admin = False
 
-# PANTALLA PRINCIPAL
+# CONTENIDO PRINCIPAL
 if st.session_state.admin:
     st.header("Panel Admin")
-    uploaded = st.file_uploader("Subir Recibos (PDF)", accept_multiple_files=True)
-    if st.button("Procesar Archivos"):
+    uploaded = st.file_uploader("Subir Recibos", accept_multiple_files=True)
+    if st.button("Procesar"):
         if uploaded:
             if not os.path.exists("recibos"): os.makedirs("recibos")
             db = []
@@ -202,7 +185,7 @@ if st.session_state.admin:
                 with open(f"recibos/{f.name}", "wb") as w: w.write(f.getbuffer())
                 db.append(extraer_info_pdf(f))
             pd.DataFrame(db).to_csv("Control_Maestro.csv", index=False)
-            st.success("Base de datos actualizada.")
+            st.success("Cargado.")
     
     if os.path.exists("Control_Maestro.csv"):
         st.dataframe(pd.read_csv("Control_Maestro.csv"))
@@ -210,25 +193,22 @@ if st.session_state.admin:
 else:
     st.header("Portal Empleado")
     
-    # LOGIN EMPLEADO
     if not st.session_state.user:
         rfc_input = st.text_input("Ingresa tu RFC").upper()
-        if st.button("Buscar Recibo"):
+        if st.button("Buscar"):
             if os.path.exists("Control_Maestro.csv"):
                 df = pd.read_csv("Control_Maestro.csv")
-                # Búsqueda exacta
                 match = df[df['rfc'] == rfc_input]
                 if not match.empty:
                     st.session_state.user = match.iloc[0].to_dict()
                     st.rerun()
                 else:
-                    st.error("RFC no encontrado en la nómina actual.")
+                    st.error("RFC no encontrado.")
             else:
-                st.warning("El sistema aún no tiene datos cargados.")
+                st.warning("Sistema vacio.")
     else:
-        # EMPLEADO LOGUEADO
         u = st.session_state.user
-        st.success(f"Bienvenido: {u['name']}")
+        st.success(f"Hola: {u['name']}")
         
         pdf_path = buscar_archivo(u['file'], u['rfc'])
         
@@ -236,10 +216,8 @@ else:
             with open(pdf_path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
             
-            # Visor
             st.markdown(f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600"></iframe>', unsafe_allow_html=True)
             
-            # Firma
             st.write("---")
             st.write("Firma aqui:")
             canvas = st_canvas(stroke_width=2, height=150, key="canvas")
@@ -248,27 +226,25 @@ else:
                 if canvas.image_data is not None:
                     path_firmado = firmar_pdf(pdf_path, canvas.image_data)
                     if path_firmado:
-                        # Buscar correo en directorio
                         email_personal = None
                         if os.path.exists("Directorio_Contactos.csv"):
                             dfc = pd.read_csv("Directorio_Contactos.csv")
                             match_c = dfc[dfc['rfc'] == u['rfc']]
                             if not match_c.empty: email_personal = match_c.iloc[0]['email']
                         
-                        # ENVIO NUCLEAR
-                        ok, msg = enviar_correo_nuclear(email_personal, path_firmado, u['rfc'])
+                        # ENVIO MODERNO
+                        ok, msg = enviar_correo_moderno(email_personal, path_firmado, u['rfc'])
                         
                         if ok:
-                            st.success("✅ Enviado correctamente!")
+                            st.success("Enviado correctamente!")
                             st.balloons()
                         else:
                             st.error(msg)
         else:
-            st.warning("No se encuentra el archivo PDF físico.")
+            st.warning("PDF no encontrado.")
         
         st.write("---")
-        # Configurar correo
-        with st.expander("Configurar mi Correo"):
+        with st.expander("Configurar Correo"):
             new_email = st.text_input("Nuevo Correo")
             if st.button("Guardar"):
                 if "@" in new_email:
