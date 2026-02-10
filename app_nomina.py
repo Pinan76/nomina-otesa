@@ -4,393 +4,286 @@ import pandas as pd
 import base64
 import os
 import re
-import glob
 import smtplib
-import io
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
+from email.header import Header
 from email import encoders
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
-from datetime import datetime
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
+import io
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-# Usamos un emoji estándar de Python para evitar errores de codificación en el servidor
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="👔")
+# --- 1. CONFIGURACIÓN DE PÁGINA (ASCII PURO) ---
+st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
 # ==========================================
-# 📧 CONFIGURACIÓN TÉCNICA BLINDADA
+# 🔧 ZONA DE SEGURIDAD (HARDCODED)
 # ==========================================
-# IMPORTANTE: Definimos el correo aquí como texto plano puro.
-# Al no usar la variable de secrets para el NOMBRE, evitamos que se cuele la Ñ.
-SENDER_EMAIL = "nomina@trajesespanoles.mx"
-EMAIL_PASSWORD = "OTE.R3c1b05"
-PASSWORD_ADMIN = "OTE.Admin2026"
+# Definimos el correo AQUI para que sea imposible que entre basura de los secrets
+# Esto sobreescribe cualquier configuracion externa.
+SENDER_EMAIL_FIJO = "nomina@trajesespanoles.mx"
 
-# Solo recuperamos la contraseña de los secrets si existe
-if "email_password" in st.secrets:
-    EMAIL_PASSWORD = st.secrets["email_password"]
-    PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
+# La contraseña sí la leemos de secrets o usamos la por defecto
+EMAIL_PASSWORD = st.secrets["email_password"] if "email_password" in st.secrets else "OTE.R3c1b05"
+PASSWORD_ADMIN = st.secrets["admin_password"] if "admin_password" in st.secrets else "OTE.Admin2026"
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
 # ==========================================
 
-# --- 1. BARRA LATERAL ---
-with st.sidebar:
-    if os.path.exists("logo.png"):
-        st.image("logo.png", width=200)
-    else:
-        st.title("OTE")
-    
-    st.write("---")
-    st.write("Configuración")
-    modo_admin = st.toggle("Soy Administrador")
-    
-    acceso_concedido = False
-    if modo_admin:
-        pass_input = st.text_input("Clave RRHH", type="password")
-        if pass_input == PASSWORD_ADMIN:
-            st.success("Acceso Concedido")
-            acceso_concedido = True
-        elif pass_input:
-            st.error("Acceso Denegado")
-
-# --- 2. INICIALIZACIÓN ---
-if 'autenticado' not in st.session_state:
-    st.session_state.autenticado = False
-if 'rfc_actual' not in st.session_state:
-    st.session_state.rfc_actual = ""
-if 'user_data' not in st.session_state:
-    st.session_state.user_data = None
-
-# --- 3. FUNCIONES TÉCNICAS ---
-
-def sanitizar_ascii(texto):
-    """
-    Función de limpieza agresiva.
-    Convierte cualquier texto a A-Z y 0-9 exclusivamente.
-    Elimina Ñ, acentos, espacios y símbolos.
-    """
+# --- FUNCIONES DE LIMPIEZA ---
+def limpiar_texto_seguro(texto):
+    """Elimina todo lo que no sea A-Z o 0-9"""
     if not isinstance(texto, str): return "DOC"
-    # Mapa de reemplazo manual
-    reemplazos = {
-        "Ñ": "N", "ñ": "n",
-        "Á": "A", "á": "a", "É": "E", "é": "e",
-        "Í": "I", "í": "i", "Ó": "O", "ó": "o", "Ú": "U", "ú": "u"
-    }
-    texto_limpio = texto.upper()
-    for viejo, nuevo in reemplazos.items():
-        texto_limpio = texto_limpio.replace(viejo, nuevo)
-        
-    # Regex final: Solo permite letras inglesas y números
-    return re.sub(r'[^A-Z0-9]', '', texto_limpio)
+    # Convertimos a mayusculas y reemplazamos Ñ por N a la fuerza
+    texto = texto.upper().replace("\u00D1", "N").replace("Ñ", "N")
+    return re.sub(r'[^A-Z0-9]', '', texto)
 
-def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
-    ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
-    if os.path.exists(ruta_exacta): return ruta_exacta
-    if not os.path.exists("recibos"): return None
-    patron = os.path.join("recibos", f"*{rfc}*.pdf")
-    coincidencias = glob.glob(patron)
-    if coincidencias: return coincidencias[0]
-    return None
-
-def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
-    POSICION_X = 460  
-    POSICION_Y = 300 
-    try:
-        packet = io.BytesIO()
-        can = pdf_canvas.Canvas(packet, pagesize=letter)
-        img = Image.fromarray(imagen_firma_numpy.astype('uint8'), 'RGBA')
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
-        can.drawImage(ImageReader(img_byte_arr), POSICION_X, POSICION_Y, width=150, height=60, mask='auto')
-        can.setFont("Helvetica", 6)
-        can.drawString(POSICION_X + 10, POSICION_Y - 10, "Firma Digital Nexus") 
-        can.save()
-        packet.seek(0)
-        new_pdf = PdfReader(packet)
-        existing_pdf = PdfReader(open(ruta_pdf_original, "rb"))
-        output = PdfWriter()
-        page = existing_pdf.pages[0]
-        page.merge_page(new_pdf.pages[0])
-        output.add_page(page)
-        for i in range(1, len(existing_pdf.pages)):
-            output.add_page(existing_pdf.pages[i])
-        nombre_firmado = ruta_pdf_original.replace(".pdf", "_FIRMADO.pdf")
-        with open(nombre_firmado, "wb") as f:
-            output.write(f)
-        return nombre_firmado
-    except Exception as e:
-        return None
-
-def enviar_correo_definitivo(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Limpieza de datos (Convertimos todo a ASCII seguro)
-    rfc_safe = sanitizar_ascii(rfc_empleado)
-    nombre_archivo_seguro = f"Recibo_{rfc_safe}.pdf"
+# --- FUNCION DE ENVIO BLINDADA ---
+def enviar_correo_nuclear(correo_destino, ruta_pdf, rfc_empleado):
+    # 1. Preparar datos 100% seguros
+    rfc_limpio = limpiar_texto_seguro(rfc_empleado)
     
-    # 2. Validación de correo destino
-    email_destino = None
-    if correo_empleado and "@" in str(correo_empleado):
-        email_destino = str(correo_empleado).strip()
+    # Nombre de archivo GENERICO para evitar el error de la posición 38 en el header del adjunto
+    # Si esto funciona, luego podemos intentar ponerle el RFC, pero primero que funcione.
+    nombre_archivo_seguro = "Recibo_Nomina.pdf" 
+
+    # Validar destino
+    if not correo_destino or "@" not in str(correo_destino):
+        # Si no hay correo, mandamos al mismo emisor como aviso
+        destinatario_final = SENDER_EMAIL_FIJO
+        es_aviso = True
+    else:
+        destinatario_final = str(correo_destino).strip()
+        es_aviso = False
 
     try:
         # Construcción del Mensaje
         msg = MIMEMultipart()
         
-        # --- FIX CRÍTICO: REMITENTE PURO ---
-        # No usamos nombre para el remitente, solo el correo.
-        # Esto evita el error de la Ñ en la posición 38 del header.
-        msg['From'] = SENDER_EMAIL 
+        # --- ENCABEZADOS (HEADERS) ---
+        # Usamos Header() para encapsular. Esto evita el error de codec ASCII.
         
-        # Asunto limpio (Sin Ñ)
-        msg['Subject'] = f"Recibo de Nomina - {rfc_safe}"
-
-        destinatarios = []
-        cuerpo = ""
+        msg['From'] = SENDER_EMAIL_FIJO # Sin nombre, solo correo
         
-        # Cuerpo del mensaje (Aquí SÍ usamos UTF-8 para que se vea bonito)
-        nombre_empresa_bonito = "Operadora de Trajes Españoles"
+        asunto = f"Recibo Nomina - {rfc_limpio}"
+        msg['Subject'] = Header(asunto, 'utf-8')
         
-        if email_destino:
-            msg['To'] = email_destino
-            msg['Cc'] = SENDER_EMAIL
-            destinatarios = [email_destino, SENDER_EMAIL]
-            
-            cuerpo = f"""Estimado colaborador,
+        msg['To'] = destinatario_final
+        msg['Cc'] = SENDER_EMAIL_FIJO # Copia siempre a RRHH
 
-Adjunto enviamos tu recibo de nómina firmado digitalmente.
-RFC: {rfc_empleado}
-
-Atentamente,
-{nombre_empresa_bonito}
-Departamento de Recursos Humanos"""
+        # Cuerpo del mensaje
+        if es_aviso:
+            texto_cuerpo = f"AVISO DE SISTEMA: El empleado {rfc_limpio} firmo su recibo (No tiene correo registrado)."
         else:
-            msg['To'] = SENDER_EMAIL
-            destinatarios = [SENDER_EMAIL]
-            cuerpo = f"AVISO DEL SISTEMA:\nEl empleado con RFC {rfc_safe} firmó el recibo (no tiene correo personal registrado)."
+            texto_cuerpo = f"""Estimado colaborador,
 
-        # Codificamos el cuerpo explícitamente en UTF-8
-        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
+Adjuntamos su recibo de nomina firmado.
+RFC: {rfc_limpio}
 
-        # Adjuntar PDF
+Atte.
+Operadora de Trajes Espanoles
+"""
+
+        # Adjuntamos texto UTF-8
+        msg.attach(MIMEText(texto_cuerpo, 'plain', 'utf-8'))
+
+        # Adjuntamos PDF
         with open(ruta_pdf, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
         encoders.encode_base64(part)
-        # Nombre de archivo seguro
+        
+        # Header del adjunto seguro
         part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
         msg.attach(part)
 
-        # Transmisión SMTP
+        # --- DEBUG EN PANTALLA (SOLO PARA TI) ---
+        st.info(f"📧 Intentando enviar de: {SENDER_EMAIL_FIJO} a: {destinatario_final}")
+
+        # Conexión SMTP
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
-        server.starttls() # Encriptación
+        server.starttls()
         server.ehlo()
-        server.login(SENDER_EMAIL, EMAIL_PASSWORD)
-        server.sendmail(SENDER_EMAIL, destinatarios, msg.as_string())
+        server.login(SENDER_EMAIL_FIJO, EMAIL_PASSWORD)
+        
+        # Envio real
+        destinatarios = [destinatario_final, SENDER_EMAIL_FIJO]
+        server.sendmail(SENDER_EMAIL_FIJO, destinatarios, msg.as_string())
         server.quit()
-        return True, "Enviado correctamente"
-    
+        
+        return True, "Enviado con exito"
+
     except Exception as e:
-        return False, f"Error Tecnico: {str(e)}"
+        return False, f"ERROR CRITICO: {str(e)}"
 
-def es_correo_valido(email):
-    return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email) is not None
+# --- OTRAS FUNCIONES ---
+def buscar_archivo(u_file, u_rfc):
+    # Busqueda simple y robusta
+    if os.path.exists(f"recibos/{u_file}"): return f"recibos/{u_file}"
+    # Busqueda por RFC
+    files = glob.glob(f"recibos/*{u_rfc}*.pdf")
+    return files[0] if files else None
 
-def guardar_contacto(rfc, email):
-    file_dir = 'Directorio_Contactos.csv'
-    if not os.path.exists(file_dir): pd.DataFrame(columns=['rfc', 'email', 'verificado']).to_csv(file_dir, index=False)
-    df = pd.read_csv(file_dir)
-    if rfc in df['rfc'].values: df.loc[df['rfc'] == rfc, 'email'] = email
-    else: df = pd.concat([df, pd.DataFrame([{'rfc': rfc, 'email': email, 'verificado': True}])])
-    df.to_csv(file_dir, index=False)
-
-def registrar_firma(rfc, archivo):
-    file_f = 'Estado_Firmas.csv'
-    if not os.path.exists(file_f): pd.DataFrame(columns=['rfc', 'archivo', 'fecha']).to_csv(file_f, index=False)
-    df = pd.read_csv(file_f)
-    if not ((df['rfc'] == rfc) & (df['archivo'] == archivo)).any():
-        nuevo = pd.DataFrame([{'rfc': rfc, 'archivo': archivo, 'fecha': datetime.now().strftime("%Y-%m-%d %H:%M")}])
-        pd.concat([df, nuevo]).to_csv(file_f, index=False)
-
-def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
-    file_cred = 'credenciales.csv'
-    if not os.path.exists(file_cred): pd.DataFrame(columns=['rfc', 'password']).to_csv(file_cred, index=False)
-    df = pd.read_csv(file_cred)
-    if modo == "verificar": return not df[df['rfc'] == rfc].empty
-    if modo == "login": return not df[(df['rfc'] == rfc) & (df['password'] == password_input)].empty
-    if modo == "registro":
-        pd.concat([df, pd.DataFrame([{'rfc': rfc, 'password': password_input}])]).to_csv(file_cred, index=False)
-
-def extraer_datos_limpios(pdf_file):
-    def limpiar_basico(t): return t.replace('\n', ' ').strip()
+def firmar_pdf(ruta_orig, firma_bytes):
     try:
-        reader = PdfReader(pdf_file)
-        texto = "".join([page.extract_text() for page in reader.pages])
-        # Regex tolerante para lectura
-        match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\s]+)', texto) 
-        nombre = limpiar_basico(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
-        match_rfc = re.search(r'RFC:\s*([A-Z]{4}\d{6}[A-Z0-9]{3})', texto)
-        rfc = match_rfc.group(1) if match_rfc else "N/A"
-        return {"file": pdf_file.name, "name": nombre, "rfc": rfc}
-    except: return {"file": pdf_file.name, "name": "Error Lectura", "rfc": "N/A"}
+        packet = io.BytesIO()
+        can = pdf_canvas.Canvas(packet, pagesize=letter)
+        img = Image.fromarray(firma_bytes.astype('uint8'), 'RGBA')
+        
+        # Guardar imagen temporal en memoria
+        img_buffer = io.BytesIO()
+        img.save(img_buffer, format='PNG')
+        img_buffer.seek(0)
+        
+        can.drawImage(ImageReader(img_buffer), 460, 300, width=150, height=60, mask='auto')
+        can.drawString(470, 290, "Firma Digital")
+        can.save()
+        packet.seek(0)
+        
+        new_pdf = PdfReader(packet)
+        existing_pdf = PdfReader(open(ruta_orig, "rb"))
+        output = PdfWriter()
+        
+        page = existing_pdf.pages[0]
+        page.merge_page(new_pdf.pages[0])
+        output.add_page(page)
+        
+        # Resto de paginas
+        for i in range(1, len(existing_pdf.pages)):
+            output.add_page(existing_pdf.pages[i])
+            
+        nombre_salida = ruta_orig.replace(".pdf", "_FIRMADO.pdf")
+        with open(nombre_salida, "wb") as f:
+            output.write(f)
+        return nombre_salida
+    except: return None
 
-# --- 4. INTERFAZ PRINCIPAL ---
+def extraer_info_pdf(file):
+    try:
+        reader = PdfReader(file)
+        text = reader.pages[0].extract_text()
+        # Buscar RFC
+        match = re.search(r'[A-Z]{4}\d{6}[A-Z0-9]{3}', text)
+        rfc = match.group(0) if match else "DESCONOCIDO"
+        # Buscar Nombre (Simple)
+        name = file.name.replace(".pdf", "")
+        return {"file": file.name, "name": name, "rfc": rfc}
+    except: return {"file": file.name, "name": "Error", "rfc": "N/A"}
 
-st.title("Operadora de Trajes Españoles")
-st.caption("Sistema Nexus - Nómina Digital")
+# ==========================================
+# INTERFAZ DE USUARIO
+# ==========================================
 
-if acceso_concedido:
-    tab1, tab2 = st.tabs(["Portal Empleado", "Panel RRHH"])
+# BARRA LATERAL
+with st.sidebar:
+    if os.path.exists("logo.png"): st.image("logo.png", width=200)
+    st.title("OTE")
+    admin_mode = st.toggle("Admin")
+    if admin_mode:
+        pwd = st.text_input("Password", type="password")
+        if pwd == PASSWORD_ADMIN:
+            st.session_state.admin = True
+            st.success("OK")
+        else:
+            st.session_state.admin = False
+
+# INICIO SESION / ESTADO
+if 'user' not in st.session_state: st.session_state.user = None
+
+if st.session_state.admin:
+    st.header("Panel Admin")
+    uploaded = st.file_uploader("Subir Recibos (PDF)", accept_multiple_files=True)
+    if st.button("Procesar"):
+        if uploaded:
+            if not os.path.exists("recibos"): os.makedirs("recibos")
+            db = []
+            for f in uploaded:
+                with open(f"recibos/{f.name}", "wb") as w: w.write(f.getbuffer())
+                db.append(extraer_info_pdf(f))
+            pd.DataFrame(db).to_csv("Control_Maestro.csv", index=False)
+            st.success("Procesado.")
+    
+    if os.path.exists("Control_Maestro.csv"):
+        st.dataframe(pd.read_csv("Control_Maestro.csv"))
+
 else:
-    tab1, = st.tabs(["Portal Empleado"])
-    tab2 = None
-
-# --- PESTAÑA 1: EMPLEADO ---
-with tab1:
-    if not st.session_state.autenticado:
-        st.subheader("Acceso Personal")
-        rfc_in = st.text_input("Ingresa tu RFC").upper()
-        
-        if rfc_in and os.path.exists('Control_Maestro.csv'):
-            df_m = pd.read_csv('Control_Maestro.csv')
-            emp = df_m[df_m['rfc'] == rfc_in]
-            
-            if not emp.empty:
-                e = emp.iloc[0]
-                st.info(f"Colaborador: **{e['name']}**")
-                
-                if not gestionar_credenciales(rfc_in):
-                    p1 = st.text_input("Crear Password", type="password")
-                    if st.button("Registrar"):
-                        gestionar_credenciales(rfc_in, p1, "registro")
-                        st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
-                else:
-                    p_log = st.text_input("Password", type="password")
-                    if st.button("Entrar"):
-                        if gestionar_credenciales(rfc_in, p_log, "login"):
-                            st.session_state.autenticado = True; st.session_state.rfc_actual = rfc_in; st.session_state.user_data = e; st.rerun()
-                        else: st.error("Clave incorrecta")
-            else: st.warning("RFC no encontrado en base de datos.")
-        elif rfc_in:
-            st.error("Base de datos no cargada (Esperando Admin).")
-            
-    else:
-        u = st.session_state.user_data
-        st.success(f"Bienvenido: {u['name']}")
-        c_izq, c_der = st.columns([2, 1])
-        
-        with c_izq:
-            st.subheader("Tu Recibo")
-            archivo_encontrado = buscar_archivo_inteligente(u['file'], u['rfc'])
-            
-            if archivo_encontrado:
-                with open(archivo_encontrado, "rb") as f:
-                    pdf_bytes = f.read()
-                    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-
-                st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
-                
-                # VISOR ROBUSTO
-                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descárgalo aquí</a>.</p></object>'
-                st.markdown(pdf_display, unsafe_allow_html=True)
-                
-                st.download_button(
-                    label="DESCARGAR PDF",
-                    data=pdf_bytes,
-                    file_name=os.path.basename(archivo_encontrado),
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-                
-                st.write("---")
-                st.write("**Firma Digital:**")
-                canvas = st_canvas(stroke_width=2, height=150, key="f")
-                
-                if st.button("Firmar y Enviar"):
-                    if canvas.image_data is not None:
-                        with st.spinner("Procesando firma..."):
-                            ruta_firmado = generar_pdf_firmado(archivo_encontrado, canvas.image_data)
-                            if ruta_firmado:
-                                registrar_firma(st.session_state.rfc_actual, os.path.basename(ruta_firmado))
-                                correo_empleado = None
-                                if os.path.exists('Directorio_Contactos.csv'):
-                                    df_c = pd.read_csv('Directorio_Contactos.csv')
-                                    match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
-                                    if not match.empty: correo_empleado = match.iloc[0]['email']
-                                
-                                # LLAMADA A FUNCIÓN FINAL
-                                exito, msg = enviar_correo_definitivo(correo_empleado, ruta_firmado, u['name'], u['rfc'])
-                                
-                                if exito:
-                                    st.success("Listo! Recibo firmado enviado.")
-                                    st.balloons()
-                                else: st.error(f"Error envio: {msg}")
-            else: 
-                st.error("Archivo PDF no encontrado.")
-                st.warning(f"Buscamos: {u['file']} o el RFC {u['rfc']}")
-        
-        with c_der:
-            with st.expander("Configuracion", expanded=True):
-                nc = st.text_input("Correo Personal")
-                if st.button("Guardar Email"):
-                    if es_correo_valido(nc):
-                        guardar_contacto(st.session_state.rfc_actual, nc)
-                        st.success("Guardado.")
-                        st.rerun()
-            if st.button("Salir"): st.session_state.autenticado = False; st.rerun()
-
-# --- PESTAÑA 2: ADMIN ---
-if acceso_concedido and tab2:
-    with tab2:
-        st.header("Panel Administrativo")
-        
-        with st.expander("Explorador de Archivos (DEBUG)", expanded=False):
-            st.write("Archivos guardados actualmente:")
-            if os.path.exists("recibos"):
-                archivos_en_nube = os.listdir("recibos")
-                if archivos_en_nube: st.write(archivos_en_nube)
-                else: st.warning("Carpeta vacía.")
-            else: st.error("Carpeta no existe.")
-
-        if os.path.exists('Control_Maestro.csv'):
-            df_m = pd.read_csv('Control_Maestro.csv')
-            df_firmas = pd.read_csv('Estado_Firmas.csv') if os.path.exists('Estado_Firmas.csv') else pd.DataFrame(columns=['rfc'])
-            firmados = df_m['rfc'].isin(df_firmas['rfc']).sum()
-            c1, c2 = st.columns(2)
-            c1.metric("Empleados Cargados", len(df_m)); c2.metric("Firmas Recibidas", firmados)
-            
-            st.subheader("Estado de Firmas")
-            df_status = df_m[['name', 'rfc']].copy()
-            df_status['Firmado'] = df_status['rfc'].isin(df_firmas['rfc']).map({True: 'SI', False: 'NO'})
-            def color_rojo(val): return f'color: {"red" if val == "NO" else "green"}'
-            st.dataframe(df_status.style.applymap(color_rojo, subset=['Firmado']), use_container_width=True)
-
-        st.write("---")
-        st.subheader("Carga de Nómina")
-        uploaded = st.file_uploader("Subir PDFs Semanales", accept_multiple_files=True)
-        
-        if st.button("Procesar Archivos"):
-            if uploaded:
-                if not os.path.exists("recibos"): os.makedirs("recibos")
-                datos = []
-                for f in uploaded:
-                    try:
-                        with open(os.path.join("recibos", f.name), "wb") as out: out.write(f.getbuffer())
-                        datos.append(extraer_datos_limpios(f))
-                    except: pass
-                if datos:
-                    if os.path.exists('Control_Maestro.csv'):
-                        df_ex = pd.read_csv('Control_Maestro.csv')
-                        df_fin = pd.concat([df_ex, pd.DataFrame(datos)]).drop_duplicates(subset=['rfc'], keep='last')
-                    else: df_fin = pd.DataFrame(datos)
-                    df_fin.to_csv('Control_Maestro.csv', index=False)
-                    st.success(f"Se cargaron {len(datos)} empleados.")
+    st.header("Portal Empleado")
+    if not st.session_state.user:
+        rfc_input = st.text_input("Ingresa tu RFC").upper()
+        if st.button("Buscar"):
+            if os.path.exists("Control_Maestro.csv"):
+                df = pd.read_csv("Control_Maestro.csv")
+                match = df[df['rfc'] == rfc_input]
+                if not match.empty:
+                    st.session_state.user = match.iloc[0].to_dict()
                     st.rerun()
+                else:
+                    st.error("RFC no encontrado.")
+    else:
+        # USUARIO LOGUEADO
+        u = st.session_state.user
+        st.success(f"Hola: {u['name']}")
+        
+        pdf_path = buscar_archivo(u['file'], u['rfc'])
+        
+        if pdf_path:
+            with open(pdf_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            
+            # Visor
+            st.markdown(f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="600"></iframe>', unsafe_allow_html=True)
+            
+            # Firma
+            st.write("---")
+            st.write("Firma aqui:")
+            canvas = st_canvas(stroke_width=2, height=150, key="canvas")
+            
+            if st.button("Firmar y Enviar"):
+                if canvas.image_data is not None:
+                    path_firmado = firmar_pdf(pdf_path, canvas.image_data)
+                    if path_firmado:
+                        # Buscar correo
+                        email_personal = None
+                        if os.path.exists("Directorio_Contactos.csv"):
+                            dfc = pd.read_csv("Directorio_Contactos.csv")
+                            match_c = dfc[dfc['rfc'] == u['rfc']]
+                            if not match_c.empty: email_personal = match_c.iloc[0]['email']
+                        
+                        # ENVIO NUCLEAR
+                        ok, msg = enviar_correo_nuclear(email_personal, path_firmado, u['rfc'])
+                        
+                        if ok:
+                            st.success("✅ Enviado correctamente!")
+                            st.balloons()
+                        else:
+                            st.error(msg)
+                            st.write("Si el error persiste, por favor toma captura de este mensaje.")
+        else:
+            st.warning("No se encuentra tu recibo.")
+        
+        # Configurar correo
+        with st.expander("Configurar mi Correo"):
+            new_email = st.text_input("Nuevo Correo")
+            if st.button("Guardar"):
+                if "@" in new_email:
+                    # Guardar en CSV simple
+                    file_c = "Directorio_Contactos.csv"
+                    if not os.path.exists(file_c): 
+                        pd.DataFrame(columns=['rfc','email']).to_csv(file_c, index=False)
+                    dfc = pd.read_csv(file_c)
+                    # Upsert simple
+                    dfc = dfc[dfc['rfc'] != u['rfc']] # Borrar anterior
+                    nuevo = pd.DataFrame([{'rfc': u['rfc'], 'email': new_email}])
+                    pd.concat([dfc, nuevo]).to_csv(file_c, index=False)
+                    st.success("Guardado")
+        
+        if st.button("Salir"):
+            st.session_state.user = None
+            st.rerun()
