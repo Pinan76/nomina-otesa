@@ -17,11 +17,9 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
 
-# Intento de importar visor
 try:
     from streamlit_pdf_viewer import pdf_viewer
 except ImportError:
-    st.error("⚠️ Faltan librerías. Agrega 'streamlit-pdf-viewer' a tu requirements.txt")
     pdf_viewer = None
 
 # --- CONFIGURACION ---
@@ -38,9 +36,12 @@ EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
+
+# 🛑 RFC DE LA EMPRESA A IGNORAR (Para que no se confunda)
+RFC_EMPRESA = "OTE2107019N1" 
 # ==========================================
 
-# --- FUNCIONES DE BASE DE DATOS ---
+# --- BASE DE DATOS ---
 def cargar_db_firmas():
     if not os.path.exists('Bitacora_Firmas.csv'):
         df = pd.DataFrame(columns=['RFC', 'Archivo', 'Fecha_Firma', 'Estado'])
@@ -63,8 +64,7 @@ def registrar_firma_db(rfc, nombre_archivo_relativo):
 def obtener_status_global():
     if os.path.exists("Control_Maestro.csv"):
         df_maestro = pd.read_csv("Control_Maestro.csv")
-    else:
-        return pd.DataFrame()
+    else: return pd.DataFrame()
 
     df_firmas = cargar_db_firmas()
     status_list = []
@@ -78,6 +78,7 @@ def obtener_status_global():
         
         estado = "❌ PENDIENTE"
         if not df_firmas.empty:
+            # Coincidencia estricta
             coincidencia = df_firmas[(df_firmas['RFC'] == rfc) & (df_firmas['Archivo'] == archivo_rel)]
             if not coincidencia.empty:
                 estado = "✅ FIRMADO"
@@ -88,25 +89,12 @@ def obtener_status_global():
             'RFC': rfc,
             'Estado': estado
         })
-        
     return pd.DataFrame(status_list)
 
-# --- RECONSTRUCCION Y CARGA ---
+# --- RECONSTRUCCION CON FILTRO DE EMPRESA ---
 def reconstruir_maestro_desde_archivos():
     if not os.path.exists("recibos"): return 0
     
-    # 1. Cargar datos existentes para no sobrescribir correcciones manuales
-    datos_existentes = {}
-    if os.path.exists("Control_Maestro.csv"):
-        try:
-            df_old = pd.read_csv("Control_Maestro.csv")
-            for _, row in df_old.iterrows():
-                # Guardamos lo que el admin ya había corregido
-                if row['rfc'] != "DESCONOCIDO":
-                    datos_existentes[row['file']] = {'rfc': row['rfc'], 'name': row['name']}
-        except: pass
-
-    # 2. Escanear Archivos
     archivos = glob.glob("recibos/**/*.pdf", recursive=True)
     db = []
     
@@ -115,39 +103,41 @@ def reconstruir_maestro_desde_archivos():
             nombre_relativo = os.path.relpath(ruta_completa, "recibos")
             if "_FIRMADO" in nombre_relativo: continue
 
-            # Si ya lo conocemos de antes, usamos los datos guardados (MEMORIA)
-            if nombre_relativo in datos_existentes:
-                db.append({
-                    "file": nombre_relativo,
-                    "name": datos_existentes[nombre_relativo]['name'],
-                    "rfc": datos_existentes[nombre_relativo]['rfc']
-                })
-                continue
-
-            # Si es nuevo, intentamos leer
             reader = PdfReader(ruta_completa)
             text = reader.pages[0].extract_text()
             
-            # RFC
-            match_rfc = re.search(r'[A-Z&Ñ]{3,4}\s*\d{6}\s*[A-Z0-9]{3}', text)
-            rfc = match_rfc.group(0).replace(" ", "").strip() if match_rfc else "DESCONOCIDO"
+            # --- CORRECCIÓN CRÍTICA: BUSCAR TODOS LOS RFCs ---
+            # Buscamos todas las coincidencias de RFC en el texto
+            todos_los_rfcs = re.findall(r'[A-Z&Ñ]{3,4}\s*\d{6}\s*[A-Z0-9]{3}', text)
             
-            # NOMBRE
+            rfc_final = "DESCONOCIDO"
+            
+            # Iteramos sobre los RFCs encontrados
+            for rfc_encontrado in todos_los_rfcs:
+                rfc_limpio = rfc_encontrado.replace(" ", "").strip()
+                # SI EL RFC NO ES EL DE LA EMPRESA, ENTONCES ES EL DEL EMPLEADO
+                if rfc_limpio != RFC_EMPRESA:
+                    rfc_final = rfc_limpio
+                    break 
+            
+            # --- NOMBRE INTELIGENTE ---
             nombre_final = "Colaborador"
-            match_kw = re.search(r'(?:EMPLEADO|TRABAJADOR|NOMBRE)[:\.\s]+([A-ZÑ\s\.]+)', text)
-            if match_kw:
-                posible = match_kw.group(1).strip().split('\n')[0]
-                if len(posible) > 4: nombre_final = posible
             
-            # Fallback nombre archivo
-            if nombre_final == "Colaborador":
-                nombre_base = os.path.basename(ruta_completa).replace(".pdf", "").replace("_", " ")
-                if any(c.isalpha() for c in nombre_base): nombre_final = nombre_base
+            # 1. Intentar sacar del nombre del archivo (Más confiable si el PDF es imagen)
+            nombre_base = os.path.basename(ruta_completa).replace(".pdf", "")
+            # Limpieza: Quitamos guiones bajos y códigos comunes
+            nombre_limpio = nombre_base.replace("_", " ").replace("-", " ")
+            # Quitamos palabras técnicas del nombre de archivo si existen
+            nombre_limpio = re.sub(r'RE\s*\d+', '', nombre_limpio)
+            nombre_limpio = re.sub(r'Semanal\s*\d+', '', nombre_limpio)
+            
+            if len(nombre_limpio) > 3:
+                nombre_final = nombre_limpio.strip()
 
             db.append({
                 "file": nombre_relativo,
                 "name": nombre_final,
-                "rfc": rfc
+                "rfc": rfc_final
             })
         except: continue
             
@@ -162,6 +152,7 @@ def purgar_semana_anterior():
         shutil.rmtree("recibos")
         os.makedirs("recibos")
     if os.path.exists("Control_Maestro.csv"):
+        # Resetear maestro
         with open("Control_Maestro.csv", "w") as f: f.write("file,name,rfc\n")
     return True
 
@@ -185,7 +176,7 @@ def enviar_correo_general(destinatario, asunto, cuerpo, adjunto_path=None, nombr
         server.send_message(msg)
         server.quit()
         return True, "Enviado con éxito"
-    except Exception as e: return False, f"Error: {str(e)}"
+    except Exception as e: return False, str(e)
 
 # --- EMPLEADO ---
 def listar_recibos_empleado_db(rfc):
@@ -203,20 +194,6 @@ def listar_recibos_empleado_db(rfc):
         return archivos_validos
     except: return []
 
-# --- CREDENCIALES ---
-def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
-    file_cred = 'credenciales.csv'
-    if not os.path.exists(file_cred): pd.DataFrame(columns=['rfc', 'password']).to_csv(file_cred, index=False)
-    df = pd.read_csv(file_cred)
-    if modo == "verificar": return not df[df['rfc'] == rfc].empty
-    if modo == "login": return not df[(df['rfc'] == rfc) & (df['password'] == password_input)].empty
-    if modo == "registro":
-        nuevo = pd.DataFrame([{'rfc': rfc, 'password': password_input}])
-        df = pd.concat([df, nuevo], ignore_index=True)
-        df.to_csv(file_cred, index=False)
-        return True
-
-# --- FIRMA ---
 def firmar_pdf(ruta_orig, firma_bytes):
     try:
         packet = io.BytesIO()
@@ -225,7 +202,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img_buffer = io.BytesIO()
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
-        # Coordenadas OTESA
+        # Coordenadas (430, 250)
         can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
         can.drawString(430, 235, "Firma Digital Empleado")
         can.save()
@@ -243,12 +220,25 @@ def firmar_pdf(ruta_orig, firma_bytes):
         return nombre_salida
     except: return None
 
+def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
+    file_cred = 'credenciales.csv'
+    if not os.path.exists(file_cred): 
+        pd.DataFrame(columns=['rfc', 'password']).to_csv(file_cred, index=False)
+    df = pd.read_csv(file_cred)
+    if modo == "verificar": return not df[df['rfc'] == rfc].empty
+    if modo == "login": return not df[(df['rfc'] == rfc) & (df['password'] == password_input)].empty
+    if modo == "registro":
+        nuevo = pd.DataFrame([{'rfc': rfc, 'password': password_input}])
+        df = pd.concat([df, nuevo], ignore_index=True)
+        df.to_csv(file_cred, index=False)
+        return True
+
 # ==========================================
 # INTERFAZ
 # ==========================================
 with st.sidebar:
     if os.path.exists("logo.png"): st.image("logo.png", width=200)
-    st.title("OTESA V31.0")
+    st.title("OTESA V32.0")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -260,70 +250,65 @@ with st.sidebar:
 if st.session_state.admin:
     st.title("📊 Panel Admin")
     
-    # PESTAÑA CLAVE: REPARACIÓN MANUAL
-    tab1, tab2, tab3, tab4 = st.tabs(["🛠️ Reparación Manual", "📂 Carga & Limpieza", "🚨 Monitor", "👥 Usuarios"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🛠️ Base de Datos", "📂 Cargar Nómina", "🚨 Monitor", "👥 Usuarios"])
     
     with tab1:
-        st.subheader("Asignación Manual de Archivos")
-        st.info("Usa esto si el PDF no se lee correctamente. Asigna el RFC al archivo manualmente.")
+        st.subheader("Gestión de Datos (Filtro Anti-Empresa Activo)")
+        st.info(f"El sistema ignorará automáticamente el RFC: {RFC_EMPRESA} para encontrar al empleado.")
         
-        if os.path.exists("Control_Maestro.csv"):
-            df_m = pd.read_csv("Control_Maestro.csv")
-            
-            # Mostramos editor solo de columnas editables
-            st.write("Edita el RFC y Nombre directamente en la tabla:")
-            
-            df_edited = st.data_editor(
-                df_m,
-                column_config={
-                    "file": st.column_config.TextColumn("Archivo (No editar)", disabled=True),
-                    "rfc": "RFC (Obligatorio)",
-                    "name": "Nombre Empleado"
-                },
-                use_container_width=True,
-                num_rows="dynamic"
-            )
-            
-            if st.button("💾 Guardar Correcciones Manuales"):
-                df_edited.to_csv("Control_Maestro.csv", index=False)
-                st.success("¡Base de Datos Actualizada! El empleado ya debería poder entrar.")
-        else:
-            st.warning("No hay base de datos. Carga archivos primero.")
-
-    with tab2:
-        st.write("1. Carga Archivos | 2. Reconstruye | 3. Borra semana anterior")
-        col_a, col_b = st.columns(2)
+        col_a, col_b = st.columns([1, 1])
         with col_a:
-            uploaded = st.file_uploader("Subir PDFs", accept_multiple_files=True)
-            if st.button("Procesar Archivos"):
-                if uploaded:
-                    if not os.path.exists("recibos"): os.makedirs("recibos")
-                    for f in uploaded:
-                        with open(f"recibos/{f.name}", "wb") as w: w.write(f.getbuffer())
-                    st.success("Archivos subidos.")
-            
-            if st.button("🔄 Reconstruir/Escanear", type="primary"):
-                n = reconstruir_maestro_desde_archivos()
-                st.success(f"Escaneados: {n}")
-                st.rerun()
-
+            if st.button("🔄 Reconstruir Base de Datos", type="primary"):
+                with st.spinner("Re-escaneando sin RFC de empresa..."):
+                    n = reconstruir_maestro_desde_archivos()
+                    st.success(f"Procesados: {n}")
+                    st.rerun()
+        
         with col_b:
-            st.error("ZONA PELIGROSA")
-            if st.button("🗑️ BORRAR TODO (Semana Anterior)"):
+            if st.button("🗑️ VACIAR SEMANA ANTERIOR"):
                 purgar_semana_anterior()
                 st.success("Limpio.")
                 st.rerun()
 
+        st.write("---")
+        st.write("**Verificar Datos Detectados:**")
+        if os.path.exists("Control_Maestro.csv"):
+            try:
+                df = pd.read_csv("Control_Maestro.csv")
+                df_edited = st.data_editor(
+                    df,
+                    column_config={
+                        "file": "Archivo",
+                        "rfc": "RFC (Debe ser del empleado)",
+                        "name": "Nombre"
+                    },
+                    disabled=["file"],
+                    num_rows="dynamic",
+                    use_container_width=True
+                )
+                if st.button("💾 Guardar Correcciones Manuales"):
+                    df_edited.to_csv("Control_Maestro.csv", index=False)
+                    st.success("Guardado.")
+            except: st.error("Error DB.")
+
+    with tab2:
+        st.write("Carga de Archivos")
+        uploaded = st.file_uploader("Subir PDFs", accept_multiple_files=True)
+        if st.button("Procesar Archivos"):
+            if uploaded:
+                if not os.path.exists("recibos"): os.makedirs("recibos")
+                for f in uploaded:
+                    with open(f"recibos/{f.name}", "wb") as w: w.write(f.getbuffer())
+                st.success("Subido. Ahora dale a Reconstruir.")
+
     with tab3:
-        st.subheader("Estado de Firmas")
+        st.subheader("Monitor")
         df_s = obtener_status_global()
         if not df_s.empty:
             st.dataframe(df_s, use_container_width=True)
-            
-            # Cobranza
             lista_p = df_s[df_s['Estado'] == "❌ PENDIENTE"]
             if not lista_p.empty:
-                sel = st.selectbox("Recordatorio a:", lista_p['Semana/Archivo'])
+                sel = st.selectbox("Recordatorio:", lista_p['Semana/Archivo'])
                 if st.button("Enviar Alerta"):
                     rfc_t = lista_p[lista_p['Semana/Archivo'] == sel].iloc[0]['RFC']
                     mail_t = None
@@ -355,7 +340,6 @@ else:
             else:
                 try:
                     df_m = pd.read_csv("Control_Maestro.csv")
-                    # Buscamos RFC exacto
                     match_user = df_m[df_m['rfc'] == rfc_input]
                     
                     if not match_user.empty:
@@ -378,7 +362,8 @@ else:
                                     st.session_state.user = {'rfc': rfc_input, 'name': nombre_persona}
                                     st.rerun()
                                 else: st.error("Error")
-                    else: st.error("RFC no encontrado. (Pide a Admin que lo asigne manualmente en la pestaña 1).")
+                    else: 
+                        st.error(f"RFC no encontrado. (El sistema ignoró {RFC_EMPRESA}, pero no encontró el tuyo. Pide a Admin corrección manual).")
                 except: st.error("Error leyendo DB.")
     else:
         u = st.session_state.user
