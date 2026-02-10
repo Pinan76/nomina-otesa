@@ -106,7 +106,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
         
         # Posición de la IMAGEN de la firma (La muevo un poco también para que acompañe al texto)
         # Antes: 460 -> Ahora: 400
-        can.drawImage(ImageReader(img_buffer), 400, 300, width=150, height=60, mask='auto')
+        can.drawImage(ImageReader(img_buffer), 460, 300, width=150, height=60, mask='auto')
         
         # --- CAMBIO AQUÍ ---
         # Posición del TEXTO "Firma Digital"
