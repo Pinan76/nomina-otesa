@@ -347,7 +347,7 @@ if st.session_state.admin:
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
 
 else:
-    st.header("Portal OTESA")
+    st.header("Portal Operadora de Trajes Españoles")
     if not st.session_state.user:
         rfc = st.text_input("RFC").upper()
         if rfc:
