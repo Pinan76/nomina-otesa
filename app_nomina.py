@@ -8,6 +8,7 @@ import glob
 import smtplib
 import io
 import shutil
+import time # <--- IMPORTANTE: Necesario para la pausa de los globos
 from datetime import datetime
 from email.message import EmailMessage
 from pypdf import PdfReader, PdfWriter
@@ -23,7 +24,23 @@ try:
 except ImportError:
     pdf_viewer = None
 
-st.set_page_config(page_title="OTESA - Nómina", layout="wide", page_icon=":necktie:")
+# ==========================================
+# 🎨 CONFIGURACIÓN VISUAL PRINCIPAL
+# ==========================================
+# Aquí definimos el título de la pestaña y el ÍCONO (favicon) usando el nuevo logo.
+PAGE_TITLE = "OTESA - Nómina"
+PAGE_ICON = "logo_otesa.png" # Usamos el archivo del logo nuevo
+
+# Si el archivo del logo no existe aún, usamos un emoji por defecto para que no falle.
+if not os.path.exists(PAGE_ICON):
+    PAGE_ICON = ":necktie:"
+
+st.set_page_config(
+    page_title=PAGE_TITLE, 
+    layout="wide", 
+    page_icon=PAGE_ICON # Aplicamos el ícono aquí
+)
+# ==========================================
 
 if 'admin' not in st.session_state: st.session_state.admin = False
 if 'user' not in st.session_state: st.session_state.user = None
@@ -260,8 +277,10 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    # SE ELIMINÓ EL LOGO DE AQUÍ
-    st.title("OTESA V31.0 (Final)")
+    # Logo en la barra lateral (Opcional, si prefieres que solo esté en el principal, comenta esta línea)
+    if os.path.exists(PAGE_ICON): st.image(PAGE_ICON, width=150) 
+    
+    st.title("Menú")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -271,7 +290,7 @@ with st.sidebar:
     else: st.session_state.admin = False
 
 if st.session_state.admin:
-    st.title("📊 Panel Admin")
+    st.title("📊 Panel Admin - OTESA")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor", "👥 Usuarios"])
     
     with tab1:
@@ -347,16 +366,18 @@ if st.session_state.admin:
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
 
 else:
-    # --- NUEVO ENCABEZADO CON LOGO ---
+    # --- VISUALIZACIÓN DEL LOGO EN EL PORTAL DEL EMPLEADO ---
     col_logo, col_titulo = st.columns([1, 4])
     with col_logo:
-        if os.path.exists("logo.jpg"): st.image("logo.jpg", width=250)
+        # Muestra el logo grande si existe
+        if os.path.exists(PAGE_ICON): st.image(PAGE_ICON, width=200)
     with col_titulo:
-        st.header("Portal Operadora de Trajes Españoles")
-    # ---------------------------------
+        st.title("Portal Operadora de Trajes Españoles")
+    st.write("---")
+    # ----------------------------------------------------
 
     if not st.session_state.user:
-        rfc = st.text_input("RFC").upper()
+        rfc = st.text_input("Ingresa tu RFC para continuar").upper()
         if rfc:
             if not os.path.exists("Control_Maestro.csv"): st.error("Error DB")
             else:
@@ -369,34 +390,34 @@ else:
                         nom = user.iloc[0]['name']
                         if gestionar_credenciales(rfc_clean, modo="verificar"):
                             st.info(f"Hola {nom}")
-                            p = st.text_input("Pass", type="password")
+                            p = st.text_input("Tu Contraseña", type="password")
                             if st.button("Entrar"):
                                 if gestionar_credenciales(rfc_clean, p, modo="login"):
                                     st.session_state.user = {'rfc': rfc_clean, 'name': nom}
                                     st.rerun()
-                                else: st.error("Mal Password")
+                                else: st.error("Contraseña incorrecta")
                         else:
-                            st.warning(f"Bienvenido {nom}. Registra Pass.")
-                            n = st.text_input("Pass", type="password")
-                            c = st.text_input("Confirmar", type="password")
-                            if st.button("Registrar"):
+                            st.warning(f"Bienvenido {nom}. Por seguridad, crea una contraseña.")
+                            n = st.text_input("Crea una Contraseña", type="password")
+                            c = st.text_input("Confirma la Contraseña", type="password")
+                            if st.button("Registrar y Entrar"):
                                 if n==c and n:
                                     gestionar_credenciales(rfc_clean, n, modo="registro")
                                     st.session_state.user = {'rfc': rfc_clean, 'name': nom}
                                     st.rerun()
-                                else: st.error("Error")
-                    else: st.error("RFC no encontrado (Verifica con RRHH).")
+                                else: st.error("Las contraseñas no coinciden")
+                    else: st.error("RFC no encontrado en la nómina actual. Verifica con RRHH.")
                 except Exception as e: st.error(f"Error sistema: {e}")
     else:
         u = st.session_state.user
-        st.success(f"Hola: {u['name']}")
+        st.success(f"Sesión iniciada: **{u['name']}**")
         
         email_actual = "No registrado"
         if os.path.exists("Directorio_Contactos.csv"):
              d = pd.read_csv("Directorio_Contactos.csv")
              x = d[d['rfc']==u['rfc']]
              if not x.empty: email_actual = x.iloc[0]['email']
-        st.caption(f"Correo registrado: {email_actual}")
+        st.caption(f"📧 Correo para envío de recibos: {email_actual}")
         
         mis_r = listar_recibos_empleado_db(u['rfc'])
         if mis_r:
@@ -405,13 +426,13 @@ else:
             firm = [r for r in mis_r if ((df_f['RFC']==u['rfc']) & (df_f['Archivo']==r)).any()]
             
             if pend:
-                st.info(f"Pendientes: {len(pend)}")
-                sel = st.selectbox("Firmar:", pend)
+                st.info(f"🔔 Tienes {len(pend)} recibo(s) pendiente(s) de firma.")
+                sel = st.selectbox("Selecciona un recibo para firmar:", pend)
                 yf = False
             elif firm:
-                st.success("Todo listo.")
-                if st.checkbox("Historial"):
-                    sel = st.selectbox("Ver:", firm)
+                st.success("✅ Estás al día. No tienes firmas pendientes.")
+                if st.checkbox("Ver historial de recibos firmados"):
+                    sel = st.selectbox("Selecciona un recibo anterior:", firm)
                     yf = True
                 else: sel = None
             else: sel = None
@@ -419,45 +440,64 @@ else:
             if sel:
                 path = os.path.join("recibos", sel)
                 with open(path, "rb") as f: b = f.read()
-                if pdf_viewer:
-                    st.write("📄 Vista Previa:")
-                    pdf_viewer(input=b, width=700)
-                else: st.warning("No visor")
+                
+                # Contenedor para la vista previa
+                with st.container(border=True):
+                    st.write("📄 **Vista Previa del Documento:**")
+                    if pdf_viewer:
+                        pdf_viewer(input=b, width=700)
+                    else: st.warning("Visor no disponible")
                 
                 if not yf:
                     st.write("---")
-                    canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
-                    if st.button("Firmar y Enviar"):
-                        if canvas_firma.image_data is not None:
-                            pf = firmar_pdf(path, canvas_firma.image_data)
-                            if pf:
-                                cuerpo_correo = f"Adjunto encontraras tu recibo correspondiente a tu semana laborada; Agradecemos tu compromiso.\nRFC: {u['rfc']}"
-                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", cuerpo_correo, pf, "Nomina.pdf", rfc_ref=u['rfc'])
-                                if ok:
-                                    registrar_firma_db(u['rfc'], sel)
-                                    st.success("Enviado correctamente")
-                                    st.balloons() # <--- GLOBOS ACTIVOS AQUÍ
-                                    st.rerun()
-                                else: st.error(t)
-                        else:
-                            st.warning("Por favor firma en el recuadro antes de enviar.")
+                    st.write("👇 **Firma en el recuadro de abajo:**")
+                    canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}", basedata=None)
+                    
+                    col_btn_firma, col_info = st.columns([1, 2])
+                    with col_btn_firma:
+                        if st.button("✅ Firmar y Enviar Recibo", type="primary"):
+                            if canvas_firma.image_data is not None:
+                                with st.spinner("Procesando firma y enviando correo..."):
+                                    pf = firmar_pdf(path, canvas_firma.image_data)
+                                    if pf:
+                                        cuerpo_correo = f"Estimado colaborador,\n\nAdjunto encontrarás tu recibo de nómina firmado correspondiente a tu semana laborada.\nAgradecemos tu compromiso.\n\nRFC: {u['rfc']}\nAtte. Operadora de Trajes Españoles."
+                                        ok, t = enviar_correo_general(email_actual, f"Recibo Nómina Firmado - {u['rfc']}", cuerpo_correo, pf, "Nomina_Firmada.pdf", rfc_ref=u['rfc'])
+                                        if ok:
+                                            registrar_firma_db(u['rfc'], sel)
+                                            st.success("¡Firma registrada y correo enviado con éxito!")
+                                            # ==============================
+                                            # 🎉 ARREGLO DE LOS GLOBOS 🎉
+                                            st.balloons()
+                                            time.sleep(2) # Pausa de 2 seg para ver la animación
+                                            # ==============================
+                                            st.rerun()
+                                        else: st.error(f"Error al enviar correo: {t}")
+                            else:
+                                st.warning("⚠️ El recuadro de firma está vacío.")
+                    with col_info:
+                        st.caption("Al firmar, aceptas de conformidad el recibo mostrado. Se enviará una copia a tu correo registrado.")
+
                 
-                st.download_button("Descargar", b, file_name=sel)
-        else: st.warning("Sin recibos")
+                st.download_button("⬇️ Descargar este recibo (PDF)", b, file_name=sel)
+        else: st.info("No se encontraron recibos asignados a tu RFC para esta semana.")
 
         st.write("---")
-        with st.expander("Actualizar mi Correo"):
-            m = st.text_input("Correo Personal")
-            if st.button("Guardar Correo"):
-                if "@" in m:
+        with st.expander("⚙️ Configuración: Actualizar mi Correo"):
+            st.write("Si cambiaste de correo, actualízalo aquí para recibir tus recibos.")
+            m = st.text_input("Nuevo Correo Personal")
+            if st.button("Guardar Nuevo Correo"):
+                if "@" in m and "." in m:
                     f = "Directorio_Contactos.csv"
                     d = pd.read_csv(f)
                     d = d[d['rfc'] != u['rfc']]
                     n = pd.DataFrame([{'rfc': u['rfc'], 'email': m}])
                     pd.concat([d, n]).to_csv(f, index=False)
-                    st.success("Correo actualizado")
+                    st.success("Correo actualizado correctamente.")
+                    time.sleep(1)
                     st.rerun()
+                else:
+                    st.error("Por favor ingresa un correo válido.")
         
-        if st.button("Salir"):
+        if st.button("🔒 Cerrar Sesión"):
             st.session_state.user = None
             st.rerun()
