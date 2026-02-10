@@ -14,6 +14,8 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
+
+# Intento de importar visor
 try:
     from streamlit_pdf_viewer import pdf_viewer
 except ImportError:
@@ -21,7 +23,7 @@ except ImportError:
     pdf_viewer = None
 
 # --- 1. CONFIGURACION DE PAGINA ---
-st.set_page_config(page_title="OTESA - OTE", layout="wide", page_icon=":necktie:")
+st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
 # --- 2. INICIALIZACION DE ESTADO ---
 if 'admin' not in st.session_state: st.session_state.admin = False
@@ -66,7 +68,7 @@ def enviar_correo_final(correo_destino, ruta_pdf, rfc_empleado):
 
         cuerpo = f"""Estimado colaborador,
 
-Adjuntamos su recibo de nomina correspondiente y Agradecemos de manera Infinita su Esfuerzo ¡¡.
+Adjuntamos su recibo de nomina correspondiente.
 RFC Referencia: {rfc_safe}
 
 Atte.
@@ -89,6 +91,31 @@ RRHH - Operadora de Trajes Espanoles
     except Exception as e:
         return False, f"ERROR TÉCNICO: {str(e)}"
 
+# --- GESTIÓN DE CREDENCIALES (SEGURIDAD) ---
+def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
+    file_cred = 'credenciales.csv'
+    # Crear archivo si no existe
+    if not os.path.exists(file_cred): 
+        pd.DataFrame(columns=['rfc', 'password']).to_csv(file_cred, index=False)
+    
+    df = pd.read_csv(file_cred)
+    
+    # Modo 1: Verificar si el usuario ya existe (para saber si pedir login o registro)
+    if modo == "verificar": 
+        return not df[df['rfc'] == rfc].empty
+    
+    # Modo 2: Login (Validar contraseña)
+    if modo == "login": 
+        return not df[(df['rfc'] == rfc) & (df['password'] == password_input)].empty
+    
+    # Modo 3: Registro (Guardar nueva contraseña)
+    if modo == "registro":
+        nuevo_usuario = pd.DataFrame([{'rfc': rfc, 'password': password_input}])
+        # Usamos concat en lugar de append (deprecated)
+        df = pd.concat([df, nuevo_usuario], ignore_index=True)
+        df.to_csv(file_cred, index=False)
+        return True
+
 # --- FUNCIONES AUXILIARES ---
 def buscar_archivo(u_file, u_rfc):
     if os.path.exists(f"recibos/{u_file}"): return f"recibos/{u_file}"
@@ -104,15 +131,9 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
         
-        # Posición de la IMAGEN de la firma (La muevo un poco también para que acompañe al texto)
-        # Antes: 460 -> Ahora: 400
-        can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
-        
-        # --- CAMBIO AQUÍ ---
-        # Posición del TEXTO "Firma Digital"
-        # Antes: 413 -> Ahora: 356 (2cm más a la izquierda)
-        can.drawString(430, 235, "Firma Digital Empleado")
-        # -------------------
+        # Posición ajustada (2cm a la izquierda)
+        can.drawImage(ImageReader(img_buffer), 400, 300, width=150, height=60, mask='auto')
+        can.drawString(356, 290, "Firma Digital")
         
         can.save()
         packet.seek(0)
@@ -144,12 +165,12 @@ def extraer_info_pdf(file):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
-    st.title("OTE V16.0")
+    if os.path.exists("logo.png"): st.image("logo.png", width=200)
+    st.title("OTE V17.0 (Seguro)")
     
     modo_admin_activado = st.toggle("Modo Admin")
     if modo_admin_activado:
-        pwd = st.text_input("Password", type="password")
+        pwd = st.text_input("Password Admin", type="password")
         if pwd == PASSWORD_ADMIN:
             st.session_state.admin = True
             st.success("Acceso OK")
@@ -158,6 +179,7 @@ with st.sidebar:
             if pwd: st.error("Error")
     else: st.session_state.admin = False
 
+# --- VISTA DE ADMINISTRADOR ---
 if st.session_state.admin:
     st.header("Panel Admin")
     uploaded = st.file_uploader("Subir Recibos", accept_multiple_files=True)
@@ -173,22 +195,58 @@ if st.session_state.admin:
     if os.path.exists("Control_Maestro.csv"):
         st.dataframe(pd.read_csv("Control_Maestro.csv"))
 
+# --- VISTA DE EMPLEADO (CON LOGIN) ---
 else:
     st.header("Portal Empleado")
+    
+    # 1. Si no hay usuario logueado, mostrar formulario de acceso
     if not st.session_state.user:
         rfc_input = st.text_input("Ingresa tu RFC").upper()
-        if st.button("Buscar"):
+        
+        if rfc_input:
+            # Verificar primero si es un empleado válido
             if os.path.exists("Control_Maestro.csv"):
-                df = pd.read_csv("Control_Maestro.csv")
-                match = df[df['rfc'] == rfc_input]
-                if not match.empty:
-                    st.session_state.user = match.iloc[0].to_dict()
-                    st.rerun()
-                else: st.error("RFC no encontrado.")
-            else: st.warning("Sistema vacío.")
+                df_maestro = pd.read_csv("Control_Maestro.csv")
+                empleado_valido = df_maestro[df_maestro['rfc'] == rfc_input]
+                
+                if not empleado_valido.empty:
+                    # El empleado existe, ahora chequeamos credenciales
+                    usuario_registrado = gestionar_credenciales(rfc_input, modo="verificar")
+                    
+                    if usuario_registrado:
+                        # YA TIENE CUENTA -> LOGIN
+                        st.info("Usuario detectado. Ingresa tu contraseña.")
+                        password_login = st.text_input("Contraseña", type="password")
+                        if st.button("Entrar"):
+                            if gestionar_credenciales(rfc_input, password_login, modo="login"):
+                                st.session_state.user = empleado_valido.iloc[0].to_dict()
+                                st.rerun()
+                            else:
+                                st.error("Contraseña incorrecta.")
+                    else:
+                        # NO TIENE CUENTA -> REGISTRO
+                        st.warning("Primer acceso detectado. Crea una contraseña.")
+                        new_pass = st.text_input("Crea tu Contraseña", type="password")
+                        confirm_pass = st.text_input("Confirma Contraseña", type="password")
+                        
+                        if st.button("Registrarme y Entrar"):
+                            if new_pass and new_pass == confirm_pass:
+                                gestionar_credenciales(rfc_input, new_pass, modo="registro")
+                                st.session_state.user = empleado_valido.iloc[0].to_dict()
+                                st.success("Registro exitoso.")
+                                st.rerun()
+                            else:
+                                st.error("Las contraseñas no coinciden o están vacías.")
+                else:
+                    st.error("RFC no encontrado en la base de datos de nómina.")
+            else:
+                st.warning("El sistema está en mantenimiento (No hay base de datos).")
+
+    # 2. Si hay usuario logueado, mostrar el recibo
     else:
         u = st.session_state.user
-        st.success(f"Hola: {u['name']}")
+        st.success(f"Bienvenido: {u['name']}")
+        
         pdf_path = buscar_archivo(u['file'], u['rfc'])
         
         if pdf_path:
@@ -242,6 +300,6 @@ else:
                     pd.concat([dfc, nuevo]).to_csv(file_c, index=False)
                     st.success("Guardado")
                     st.rerun()
-        if st.button("Salir"):
+        if st.button("Cerrar Sesión"):
             st.session_state.user = None
             st.rerun()
