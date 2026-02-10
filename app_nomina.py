@@ -21,7 +21,7 @@ except ImportError:
     pdf_viewer = None
 
 # --- 1. CONFIGURACION DE PAGINA ---
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
+st.set_page_config(page_title="OTESA - OTE", layout="wide", page_icon=":necktie:")
 
 # --- 2. INICIALIZACION DE ESTADO ---
 if 'admin' not in st.session_state: st.session_state.admin = False
@@ -66,7 +66,7 @@ def enviar_correo_final(correo_destino, ruta_pdf, rfc_empleado):
 
         cuerpo = f"""Estimado colaborador,
 
-Adjuntamos su recibo de nomina correspondiente.
+Adjuntamos su recibo de nomina correspondiente y Agradecemos de manera Infinita su Esfuerzo ¡¡.
 RFC Referencia: {rfc_safe}
 
 Atte.
