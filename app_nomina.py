@@ -41,19 +41,12 @@ RFC_EMPRESA = "OTE2107019N1"
 
 # --- FUNCIONES DE BASE DE DATOS ---
 def inicializar_db():
-    # 1. Maestro
     if not os.path.exists('Control_Maestro.csv'):
         with open('Control_Maestro.csv', 'w') as f: f.write('file,name,rfc\n')
-    
-    # 2. Firmas
     if not os.path.exists('Bitacora_Firmas.csv'):
         pd.DataFrame(columns=['RFC', 'Archivo', 'Fecha_Firma', 'Estado']).to_csv('Bitacora_Firmas.csv', index=False)
-        
-    # 3. Correos (Directorio)
     if not os.path.exists('Directorio_Contactos.csv'):
         pd.DataFrame(columns=['rfc', 'email']).to_csv('Directorio_Contactos.csv', index=False)
-
-    # 4. Bitácora de Envíos (NUEVO)
     if not os.path.exists('Bitacora_Envios.csv'):
         pd.DataFrame(columns=['Fecha', 'RFC', 'Destino', 'Estado', 'Detalle']).to_csv('Bitacora_Envios.csv', index=False)
 
@@ -74,18 +67,18 @@ def registrar_firma_db(rfc, nombre_archivo_relativo):
         df.to_csv('Bitacora_Firmas.csv', index=False)
 
 def registrar_envio_correo(rfc, destino, estado, detalle):
-    """Guarda el resultado del envío en la bitácora"""
     file_log = 'Bitacora_Envios.csv'
     nuevo = {
         'Fecha': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         'RFC': rfc,
         'Destino': destino,
-        'Estado': estado, # EXITOSO o FALLIDO
+        'Estado': estado,
         'Detalle': detalle
     }
-    df = pd.read_csv(file_log)
-    df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
-    df.to_csv(file_log, index=False)
+    if os.path.exists(file_log):
+        df = pd.read_csv(file_log)
+        df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
+        df.to_csv(file_log, index=False)
 
 def obtener_status_global():
     if os.path.exists("Control_Maestro.csv"):
@@ -267,8 +260,8 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
-    st.title("OTESA V34.0")
+    if os.path.exists("logo.png"): st.image("logo.png", width=200)
+    st.title("OTESA V35.0")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -279,7 +272,7 @@ with st.sidebar:
 
 if st.session_state.admin:
     st.title("📊 Panel Admin")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor de Correos", "👥 Usuarios"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor", "👥 Usuarios"])
     
     with tab1:
         st.subheader("Mantenimiento")
@@ -336,22 +329,19 @@ if st.session_state.admin:
                     else: st.warning("Sin mail")
         else: st.info("Vacio")
 
-    # --- PESTAÑA NUEVA: MONITOR DE CORREOS ---
+    # PESTAÑA MONITOR CORREOS
     with tab4:
         st.subheader("Bitácora de Envíos")
-        st.info("Aquí puedes ver si los correos salieron del servidor correctamente.")
         if os.path.exists('Bitacora_Envios.csv'):
             df_log = pd.read_csv('Bitacora_Envios.csv')
-            # Ordenar por fecha descendente
             if not df_log.empty:
                 df_log = df_log.sort_index(ascending=False)
                 st.dataframe(df_log, use_container_width=True)
-            else: st.info("No hay envíos registrados.")
+            else: st.info("Sin envíos.")
             
-            if st.button("Borrar Historial de Envíos"):
+            if st.button("Limpiar Historial Envíos"):
                 pd.DataFrame(columns=['Fecha', 'RFC', 'Destino', 'Estado', 'Detalle']).to_csv('Bitacora_Envios.csv', index=False)
                 st.rerun()
-        else: st.write("El archivo de log se creará con el primer envío.")
 
     with tab5:
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
@@ -394,13 +384,11 @@ else:
         u = st.session_state.user
         st.success(f"Hola: {u['name']}")
         
-        # MOSTRAR Y CONFIGURAR CORREO PRIMERO SI NO EXISTE
         email_actual = "No registrado"
         if os.path.exists("Directorio_Contactos.csv"):
              d = pd.read_csv("Directorio_Contactos.csv")
              x = d[d['rfc']==u['rfc']]
              if not x.empty: email_actual = x.iloc[0]['email']
-        
         st.caption(f"Correo registrado: {email_actual}")
         
         mis_r = listar_recibos_empleado_db(u['rfc'])
@@ -424,22 +412,29 @@ else:
             if sel:
                 path = os.path.join("recibos", sel)
                 with open(path, "rb") as f: b = f.read()
-                if pdf_viewer: pdf_viewer(input=b, width=700)
+                if pdf_viewer:
+                    st.write("📄 Vista Previa:")
+                    pdf_viewer(input=b, width=700)
+                else: st.warning("No visor")
                 
                 if not yf:
                     st.write("---")
-                    canv = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
+                    # AQUÍ ESTÁ LA CORRECCIÓN CLAVE (VARIABLE CORRECTA)
+                    canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
                     if st.button("Firmar y Enviar"):
-                        if canvas.image_data is not None:
-                            pf = firmar_pdf(path, canv.image_data)
+                        if canvas_firma.image_data is not None:
+                            pf = firmar_pdf(path, canvas_firma.image_data)
                             if pf:
-                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", "Adjunto tu recibo correspondiente a la semana laborada y agardecemos tu aporte.", pf, "Nomina.pdf", rfc_ref=u['rfc'])
+                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", "Adjunto.", pf, "Nomina.pdf", rfc_ref=u['rfc'])
                                 if ok:
                                     registrar_firma_db(u['rfc'], sel)
                                     st.success("Enviado")
                                     st.balloons()
                                     st.rerun()
                                 else: st.error(t)
+                        else:
+                            st.warning("Por favor firma en el recuadro antes de enviar.")
+                
                 st.download_button("Descargar", b, file_name=sel)
         else: st.warning("Sin recibos")
 
