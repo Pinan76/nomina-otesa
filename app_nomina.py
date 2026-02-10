@@ -7,16 +7,13 @@ import re
 import glob
 import smtplib
 import io
-# Librería moderna para el correo
 from email.message import EmailMessage
-# Librerías de PDF e imagen
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
-# --- NUEVO VISOR PROFESIONAL (Requiere streamlit-pdf-viewer en requirements.txt) ---
 try:
     from streamlit_pdf_viewer import pdf_viewer
 except ImportError:
@@ -24,7 +21,7 @@ except ImportError:
     pdf_viewer = None
 
 # --- 1. CONFIGURACION DE PAGINA ---
-st.set_page_config(page_title="OTESA - OTE", layout="wide", page_icon=":necktie:")
+st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
 
 # --- 2. INICIALIZACION DE ESTADO ---
 if 'admin' not in st.session_state: st.session_state.admin = False
@@ -32,19 +29,17 @@ if 'user' not in st.session_state: st.session_state.user = None
 if 'autenticado' not in st.session_state: st.session_state.autenticado = False
 
 # ==========================================
-# 🛑 CREDENCIALES (YA PROBADAS Y FUNCIONALES)
+# 🛑 CREDENCIALES
 # ==========================================
 SENDER_EMAIL = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05" 
 PASSWORD_ADMIN = "OTE.Admin2026"
-
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
 # ==========================================
 
 # --- FUNCION DE LIMPIEZA ---
 def limpiar_todo(texto):
-    """Deja solo letras y números. Convierte Ñ->N."""
     if not isinstance(texto, str): return "DOC"
     mapa = {"Ñ":"N", "ñ":"n", "Á":"A", "É":"E", "Í":"I", "Ó":"O", "Ú":"U", "á":"a", "é":"e", "í":"i", "ó":"o", "ú":"u"}
     texto_limpio = texto.upper()
@@ -52,7 +47,7 @@ def limpiar_todo(texto):
         texto_limpio = texto_limpio.replace(k, v)
     return re.sub(r'[^A-Z0-9]', '', texto_limpio)
 
-# --- FUNCION DE ENVIO (MANTIENE LA SOLUCION DEL EXITO ANTERIOR) ---
+# --- FUNCION DE ENVIO ---
 def enviar_correo_final(correo_destino, ruta_pdf, rfc_empleado):
     rfc_safe = limpiar_todo(rfc_empleado)
     nombre_archivo = "Recibo_Nomina.pdf"
@@ -71,7 +66,7 @@ def enviar_correo_final(correo_destino, ruta_pdf, rfc_empleado):
 
         cuerpo = f"""Estimado colaborador,
 
-Adjuntamos su recibo de nomina correspondiente a esta Semana de Trabajo, Agradecemos de manera Infinita tu compromiso ¡¡.
+Adjuntamos su recibo de nomina correspondiente.
 RFC Referencia: {rfc_safe}
 
 Atte.
@@ -90,9 +85,7 @@ RRHH - Operadora de Trajes Espanoles
         server.login(SENDER_EMAIL, EMAIL_PASSWORD)
         server.send_message(msg)
         server.quit()
-        
         return True, "Enviado con éxito"
-
     except Exception as e:
         return False, f"ERROR TÉCNICO: {str(e)}"
 
@@ -110,8 +103,17 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img_buffer = io.BytesIO()
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
-        can.drawImage(ImageReader(img_buffer), 430, 240, width=150, height=60, mask='auto')
-        can.drawString(480, 235, "Firma Digital Empleado")
+        
+        # Posición de la IMAGEN de la firma (La muevo un poco también para que acompañe al texto)
+        # Antes: 460 -> Ahora: 400
+        can.drawImage(ImageReader(img_buffer), 400, 300, width=150, height=60, mask='auto')
+        
+        # --- CAMBIO AQUÍ ---
+        # Posición del TEXTO "Firma Digital"
+        # Antes: 413 -> Ahora: 356 (2cm más a la izquierda)
+        can.drawString(356, 290, "Firma Digital")
+        # -------------------
+        
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -143,7 +145,7 @@ def extraer_info_pdf(file):
 # ==========================================
 with st.sidebar:
     if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
-    st.title("OTE V14.0")
+    st.title("OTE V16.0")
     
     modo_admin_activado = st.toggle("Modo Admin")
     if modo_admin_activado:
@@ -193,14 +195,11 @@ else:
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()
             
-            # --- VISUALIZACIÓN NUEVA Y PERFECTA ---
             if pdf_viewer:
                 st.write("📄 **Vista Previa del Documento:**")
-                # Renderiza el PDF como imágenes nativas (funciona en celular)
                 pdf_viewer(input=pdf_bytes, width=700)
             else:
-                st.warning("El visor no pudo cargarse. Revisa el requirements.txt")
-            # -------------------------------------
+                st.warning("El visor no pudo cargarse.")
 
             st.write("---")
             st.write("✍️ **Firma Digital:**")
