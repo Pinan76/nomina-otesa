@@ -4,3 +4,4 @@ pypdf
 reportlab
 Pillow
 streamlit-drawable-canvas
+streamlit-pdf-viewer
