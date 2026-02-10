@@ -39,29 +39,27 @@ PUERTO_SMTP = 587
 RFC_EMPRESA = "OTE2107019N1" 
 # ==========================================
 
-# --- FUNCIONES DE BASE DE DATOS (A PRUEBA DE FALLOS) ---
+# --- FUNCIONES DE BASE DE DATOS ---
 def inicializar_db():
-    """Verifica y repara la DB si está corrupta"""
-    if os.path.exists('Control_Maestro.csv'):
-        try:
-            df = pd.read_csv('Control_Maestro.csv')
-            # Verificar si tiene las columnas necesarias
-            if not {'file', 'name', 'rfc'}.issubset(df.columns):
-                raise ValueError("Columnas incorrectas")
-        except:
-            # Si falla, REINICIAR archivo
-            with open('Control_Maestro.csv', 'w') as f:
-                f.write('file,name,rfc\n')
-
+    # 1. Maestro
+    if not os.path.exists('Control_Maestro.csv'):
+        with open('Control_Maestro.csv', 'w') as f: f.write('file,name,rfc\n')
+    
+    # 2. Firmas
     if not os.path.exists('Bitacora_Firmas.csv'):
-        df = pd.DataFrame(columns=['RFC', 'Archivo', 'Fecha_Firma', 'Estado'])
-        df.to_csv('Bitacora_Firmas.csv', index=False)
+        pd.DataFrame(columns=['RFC', 'Archivo', 'Fecha_Firma', 'Estado']).to_csv('Bitacora_Firmas.csv', index=False)
+        
+    # 3. Correos (Directorio)
+    if not os.path.exists('Directorio_Contactos.csv'):
+        pd.DataFrame(columns=['rfc', 'email']).to_csv('Directorio_Contactos.csv', index=False)
 
-# Llamamos a esta función al inicio siempre
+    # 4. Bitácora de Envíos (NUEVO)
+    if not os.path.exists('Bitacora_Envios.csv'):
+        pd.DataFrame(columns=['Fecha', 'RFC', 'Destino', 'Estado', 'Detalle']).to_csv('Bitacora_Envios.csv', index=False)
+
 inicializar_db()
 
-def cargar_db_firmas():
-    return pd.read_csv('Bitacora_Firmas.csv')
+def cargar_db_firmas(): return pd.read_csv('Bitacora_Firmas.csv')
 
 def registrar_firma_db(rfc, nombre_archivo_relativo):
     df = cargar_db_firmas()
@@ -75,12 +73,24 @@ def registrar_firma_db(rfc, nombre_archivo_relativo):
         df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
         df.to_csv('Bitacora_Firmas.csv', index=False)
 
+def registrar_envio_correo(rfc, destino, estado, detalle):
+    """Guarda el resultado del envío en la bitácora"""
+    file_log = 'Bitacora_Envios.csv'
+    nuevo = {
+        'Fecha': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'RFC': rfc,
+        'Destino': destino,
+        'Estado': estado, # EXITOSO o FALLIDO
+        'Detalle': detalle
+    }
+    df = pd.read_csv(file_log)
+    df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
+    df.to_csv(file_log, index=False)
+
 def obtener_status_global():
     if os.path.exists("Control_Maestro.csv"):
-        try:
-            df_maestro = pd.read_csv("Control_Maestro.csv")
-        except:
-            return pd.DataFrame()
+        try: df_maestro = pd.read_csv("Control_Maestro.csv")
+        except: return pd.DataFrame()
     else: return pd.DataFrame()
 
     df_firmas = cargar_db_firmas()
@@ -96,8 +106,7 @@ def obtener_status_global():
         estado = "❌ PENDIENTE"
         if not df_firmas.empty:
             coincidencia = df_firmas[(df_firmas['RFC'] == rfc) & (df_firmas['Archivo'] == archivo_rel)]
-            if not coincidencia.empty:
-                estado = "✅ FIRMADO"
+            if not coincidencia.empty: estado = "✅ FIRMADO"
         
         status_list.append({
             'Semana/Archivo': archivo_rel,
@@ -107,10 +116,9 @@ def obtener_status_global():
         })
     return pd.DataFrame(status_list)
 
-# --- ESCANER MEJORADO V33 ---
+# --- ESCANER INTELIGENTE ---
 def reconstruir_maestro_desde_archivos():
     if not os.path.exists("recibos"): return 0
-    
     archivos = glob.glob("recibos/**/*.pdf", recursive=True)
     db = []
     
@@ -121,64 +129,40 @@ def reconstruir_maestro_desde_archivos():
 
             reader = PdfReader(ruta_completa)
             text = reader.pages[0].extract_text()
-            lines = text.split('\n') # Dividimos por líneas para analizar contexto
+            lines = text.split('\n')
             
-            # 1. BUSCAR RFC EMPLEADO
-            # Buscamos todos los RFCs
+            # RFC
             todos_rfcs = re.findall(r'[A-Z&Ñ]{3,4}\s*\d{6}\s*[A-Z0-9]{3}', text)
             rfc_final = "DESCONOCIDO"
-            
             for rfc in todos_rfcs:
                 clean_rfc = rfc.replace(" ", "").strip()
-                if clean_rfc != RFC_EMPRESA: # Ignoramos empresa
-                    rfc_final = clean_rfc
-                    break
+                if clean_rfc != RFC_EMPRESA:
+                    rfc_final = clean_rfc; break
             
-            # 2. BUSCAR NOMBRE (Lógica de Proximidad)
+            # NOMBRE
             nombre_final = "Colaborador"
-            
             if rfc_final != "DESCONOCIDO":
-                # Buscamos en qué línea está el RFC del empleado
                 idx_rfc = -1
                 for i, line in enumerate(lines):
-                    if rfc_final in line.replace(" ", ""): # Tolerancia a espacios
-                        idx_rfc = i
-                        break
+                    if rfc_final in line.replace(" ", ""): idx_rfc = i; break
                 
-                # Si encontramos la línea del RFC, miramos alrededor
                 if idx_rfc != -1:
-                    # A veces el nombre está en la MISMA línea, antes o después
-                    # A veces está en la línea SUPERIOR (idx_rfc - 1)
-                    # A veces está en la línea INFERIOR (idx_rfc + 1)
-                    
                     candidatos = []
-                    # Checar linea actual quitando el RFC
                     candidatos.append(lines[idx_rfc].replace(rfc_final, "").strip())
                     if idx_rfc > 0: candidatos.append(lines[idx_rfc-1].strip())
                     if idx_rfc < len(lines)-1: candidatos.append(lines[idx_rfc+1].strip())
                     
                     for cand in candidatos:
-                        # Un nombre válido debe tener letras, espacios, y longitud decente
-                        # Y NO debe ser una fecha, ni números puros
                         if len(cand) > 7 and any(c.isalpha() for c in cand):
-                            # Filtro basura común
-                            if "RFC" not in cand and "CURP" not in cand and "IMSS" not in cand:
-                                nombre_final = cand
-                                break
+                            if "RFC" not in cand and "CURP" not in cand:
+                                nombre_final = cand; break
             
-            # FALLBACK: Si no encontramos nombre cerca del RFC, intentamos limpiar el nombre de archivo
-            # Pero solo si no parece un código de serie (ej: A00005)
             if nombre_final == "Colaborador":
                 base = os.path.basename(ruta_completa)
-                # Si el archivo tiene formato "RE_3107...", no sirve como nombre.
                 if not base.startswith("RE_"):
                      nombre_final = base.replace(".pdf", "").replace("_", " ")
 
-            db.append({
-                "file": nombre_relativo,
-                "name": nombre_final,
-                "rfc": rfc_final
-            })
+            db.append({"file": nombre_relativo, "name": nombre_final, "rfc": rfc_final})
         except: continue
             
     if db:
@@ -195,9 +179,10 @@ def purgar_semana_anterior():
     return True
 
 # --- CORREO ---
-def enviar_correo_general(destinatario, asunto, cuerpo, adjunto_path=None, nombre_adjunto=None):
+def enviar_correo_general(destinatario, asunto, cuerpo, adjunto_path=None, nombre_adjunto=None, rfc_ref="N/A"):
     dest = SENDER_EMAIL
     if destinatario and "@" in str(destinatario): dest = str(destinatario).strip()
+    
     try:
         msg = EmailMessage()
         msg['Subject'] = asunto
@@ -205,16 +190,25 @@ def enviar_correo_general(destinatario, asunto, cuerpo, adjunto_path=None, nombr
         msg['To'] = dest
         msg['Cc'] = SENDER_EMAIL
         msg.set_content(cuerpo)
+
         if adjunto_path:
             with open(adjunto_path, 'rb') as f:
                 msg.add_attachment(f.read(), maintype='application', subtype='pdf', filename=nombre_adjunto)
+
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo(); server.starttls(); server.ehlo()
         server.login(SENDER_EMAIL, EMAIL_PASSWORD)
         server.send_message(msg)
         server.quit()
+        
+        # REGISTRAR EXITO
+        registrar_envio_correo(rfc_ref, dest, "EXITOSO", "Enviado correctamente")
         return True, "Enviado"
-    except Exception as e: return False, str(e)
+
+    except Exception as e:
+        # REGISTRAR ERROR
+        registrar_envio_correo(rfc_ref, dest, "FALLIDO", str(e))
+        return False, str(e)
 
 # --- EMPLEADO ---
 def listar_recibos_empleado_db(rfc):
@@ -226,8 +220,7 @@ def listar_recibos_empleado_db(rfc):
         validos = []
         for f in archivos:
             if "_FIRMADO" in f: continue
-            if os.path.exists(os.path.join("recibos", f)):
-                validos.append(f)
+            if os.path.exists(os.path.join("recibos", f)): validos.append(f)
         validos.sort(reverse=True)
         return validos
     except: return []
@@ -240,6 +233,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img_buffer = io.BytesIO()
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
+        # Coordenadas OTESA
         can.drawImage(ImageReader(img_buffer), 430, 250, width=150, height=60, mask='auto')
         can.drawString(430, 235, "Firma Digital Empleado")
         can.save()
@@ -259,8 +253,7 @@ def firmar_pdf(ruta_orig, firma_bytes):
 
 def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
     file_cred = 'credenciales.csv'
-    if not os.path.exists(file_cred): 
-        pd.DataFrame(columns=['rfc', 'password']).to_csv(file_cred, index=False)
+    if not os.path.exists(file_cred): pd.DataFrame(columns=['rfc', 'password']).to_csv(file_cred, index=False)
     df = pd.read_csv(file_cred)
     if modo == "verificar": return not df[df['rfc'] == rfc].empty
     if modo == "login": return not df[(df['rfc'] == rfc) & (df['password'] == password_input)].empty
@@ -275,7 +268,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # ==========================================
 with st.sidebar:
     if os.path.exists("logo.png"): st.image("logo.png", width=200)
-    st.title("OTESA V33.0")
+    st.title("OTESA V34.0")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -286,24 +279,22 @@ with st.sidebar:
 
 if st.session_state.admin:
     st.title("📊 Panel Admin")
-    tab1, tab2, tab3, tab4 = st.tabs(["🛠️ Base de Datos", "📂 Carga", "🚨 Monitor", "👥 Usuarios"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🛠️ DB", "📂 Carga", "🚨 Firmas", "📧 Monitor de Correos", "👥 Usuarios"])
     
     with tab1:
         st.subheader("Mantenimiento")
-        col_a, col_b = st.columns(2)
-        with col_a:
+        c1, c2 = st.columns(2)
+        with c1:
             if st.button("🔄 Reconstruir Base de Datos", type="primary"):
                 n = reconstruir_maestro_desde_archivos()
                 st.success(f"Procesados: {n}")
                 st.rerun()
-        with col_b:
+        with c2:
             if st.button("🗑️ VACIAR SEMANA ANTERIOR"):
                 purgar_semana_anterior()
-                st.success("Limpio.")
-                st.rerun()
+                st.success("Limpio."); st.rerun()
         
         st.write("---")
-        st.write("Verificar Datos (Editar si el nombre o RFC están mal):")
         if os.path.exists("Control_Maestro.csv"):
             try:
                 df = pd.read_csv("Control_Maestro.csv")
@@ -311,7 +302,7 @@ if st.session_state.admin:
                 if st.button("💾 Guardar Correcciones"):
                     df_ed.to_csv("Control_Maestro.csv", index=False)
                     st.success("Guardado.")
-            except Exception as e: st.error(f"Error DB: {e}")
+            except: pass
 
     with tab2:
         uploaded = st.file_uploader("Subir PDFs", accept_multiple_files=True)
@@ -320,7 +311,7 @@ if st.session_state.admin:
                 if not os.path.exists("recibos"): os.makedirs("recibos")
                 for f in uploaded:
                     with open(f"recibos/{f.name}", "wb") as w: w.write(f.getbuffer())
-                st.success("Listo. Ve a 'Base de Datos' -> Reconstruir.")
+                st.success("Listo. Ve a 'DB' -> Reconstruir.")
 
     with tab3:
         st.subheader("Firmas")
@@ -337,14 +328,32 @@ if st.session_state.admin:
                         d = pd.read_csv("Directorio_Contactos.csv")
                         x = d[d['rfc']==r]
                         if not x.empty: m = x.iloc[0]['email']
+                    
                     if m:
-                        ok, msg = enviar_correo_general(m, "ALERTA", "Firma pendiente.")
+                        ok, msg = enviar_correo_general(m, "ALERTA", "Firma pendiente.", rfc_ref=r)
                         if ok: st.success("Enviado")
                         else: st.error(msg)
                     else: st.warning("Sin mail")
         else: st.info("Vacio")
 
+    # --- PESTAÑA NUEVA: MONITOR DE CORREOS ---
     with tab4:
+        st.subheader("Bitácora de Envíos")
+        st.info("Aquí puedes ver si los correos salieron del servidor correctamente.")
+        if os.path.exists('Bitacora_Envios.csv'):
+            df_log = pd.read_csv('Bitacora_Envios.csv')
+            # Ordenar por fecha descendente
+            if not df_log.empty:
+                df_log = df_log.sort_index(ascending=False)
+                st.dataframe(df_log, use_container_width=True)
+            else: st.info("No hay envíos registrados.")
+            
+            if st.button("Borrar Historial de Envíos"):
+                pd.DataFrame(columns=['Fecha', 'RFC', 'Destino', 'Estado', 'Detalle']).to_csv('Bitacora_Envios.csv', index=False)
+                st.rerun()
+        else: st.write("El archivo de log se creará con el primer envío.")
+
+    with tab5:
         if os.path.exists("Directorio_Contactos.csv"): st.dataframe(pd.read_csv("Directorio_Contactos.csv"))
 
 else:
@@ -356,10 +365,8 @@ else:
             else:
                 try:
                     df = pd.read_csv("Control_Maestro.csv")
-                    # Intenta limpiar RFC de espacios para comparar
                     df['rfc_clean'] = df['rfc'].astype(str).str.replace(" ", "")
                     rfc_clean = rfc.replace(" ", "")
-                    
                     user = df[df['rfc_clean'] == rfc_clean]
                     if not user.empty:
                         nom = user.iloc[0]['name']
@@ -386,6 +393,16 @@ else:
     else:
         u = st.session_state.user
         st.success(f"Hola: {u['name']}")
+        
+        # MOSTRAR Y CONFIGURAR CORREO PRIMERO SI NO EXISTE
+        email_actual = "No registrado"
+        if os.path.exists("Directorio_Contactos.csv"):
+             d = pd.read_csv("Directorio_Contactos.csv")
+             x = d[d['rfc']==u['rfc']]
+             if not x.empty: email_actual = x.iloc[0]['email']
+        
+        st.caption(f"Correo registrado: {email_actual}")
+        
         mis_r = listar_recibos_empleado_db(u['rfc'])
         if mis_r:
             df_f = cargar_db_firmas()
@@ -413,22 +430,31 @@ else:
                     st.write("---")
                     canv = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
                     if st.button("Firmar y Enviar"):
-                        if canv.image_data is not None:
+                        if canvas.image_data is not None:
                             pf = firmar_pdf(path, canv.image_data)
                             if pf:
-                                mu = None
-                                if os.path.exists("Directorio_Contactos.csv"):
-                                    d = pd.read_csv("Directorio_Contactos.csv")
-                                    x = d[d['rfc']==u['rfc']]
-                                    if not x.empty: mu = x.iloc[0]['email']
-                                ok, t = enviar_correo_general(mu, f"Nomina {u['rfc']}", "Adjunto.", pf, "Nomina.pdf")
+                                ok, t = enviar_correo_general(email_actual, f"Nomina {u['rfc']}", "Adjunto tu recibo correspondiente a la semana laborada y agardecemos tu aporte.", pf, "Nomina.pdf", rfc_ref=u['rfc'])
                                 if ok:
                                     registrar_firma_db(u['rfc'], sel)
-                                    st.success("OK")
+                                    st.success("Enviado")
+                                    st.balloons()
                                     st.rerun()
                                 else: st.error(t)
                 st.download_button("Descargar", b, file_name=sel)
         else: st.warning("Sin recibos")
+
+        st.write("---")
+        with st.expander("Actualizar mi Correo"):
+            m = st.text_input("Correo Personal")
+            if st.button("Guardar Correo"):
+                if "@" in m:
+                    f = "Directorio_Contactos.csv"
+                    d = pd.read_csv(f)
+                    d = d[d['rfc'] != u['rfc']]
+                    n = pd.DataFrame([{'rfc': u['rfc'], 'email': m}])
+                    pd.concat([d, n]).to_csv(f, index=False)
+                    st.success("Correo actualizado")
+                    st.rerun()
         
         if st.button("Salir"):
             st.session_state.user = None
