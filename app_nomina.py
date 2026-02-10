@@ -38,7 +38,25 @@ st.set_page_config(
     layout="wide", 
     page_icon=PAGE_ICON
 )
-# ==========================================
+
+# --- 📱 TRUCO CSS PARA SCROLL EN MÓVIL ---
+# Esto habilita que puedas mover el dedo a los lados si el PDF es muy grande
+st.markdown("""
+    <style>
+    /* Permite scroll horizontal en contenedores desbordados */
+    .stMainBlockContainer {
+        overflow-x: auto !important;
+    }
+    .element-container {
+        overflow-x: auto !important;
+    }
+    /* Ajuste para que el canvas de firma no se deforme en movil */
+    canvas {
+        max-width: 100%;
+    }
+    </style>
+""", unsafe_allow_html=True)
+# -----------------------------------------
 
 if 'admin' not in st.session_state: st.session_state.admin = False
 if 'user' not in st.session_state: st.session_state.user = None
@@ -273,7 +291,7 @@ def gestionar_credenciales(rfc, password_input=None, modo="verificar"):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    st.title("OTESA V33.0 (Corregida)")
+    st.title("OTESA V34.0 (Mobile)")
     if st.toggle("Modo Admin"):
         pwd = st.text_input("Password", type="password")
         if pwd == PASSWORD_ADMIN:
@@ -432,6 +450,7 @@ else:
                 
                 with st.container(border=True):
                     st.write("📄 **Vista Previa del Documento:**")
+                    st.info("💡 Tip: Si estás en celular, puedes deslizar el documento hacia los lados.")
                     if pdf_viewer:
                         pdf_viewer(input=b, width=700)
                     else: st.warning("Visor no disponible")
@@ -439,7 +458,6 @@ else:
                 if not yf:
                     st.write("---")
                     st.write("👇 **Firma en el recuadro de abajo:**")
-                    # CORRECCIÓN AQUÍ: Quitamos 'basedata' y usamos valores por defecto
                     canvas_firma = st_canvas(stroke_width=2, height=150, key=f"c_{sel}")
                     
                     if st.button("✅ Firmar y Enviar Recibo", type="primary"):
