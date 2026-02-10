@@ -269,7 +269,7 @@ if st.session_state.admin:
                         cuerpo = f"""Hola,
                         
 Tienes un recibo de nómina pendiente de firma: {archivo_alerta}
-Por favor ingresa al portal Nexus y fírmalo lo antes posible.
+Por favor ingresa al portal OTESA y fírmalo lo antes posible.
 
 Atte. RRHH"""
                         ok, msg = enviar_correo_general(email_target, "ALERTA: Firma Pendiente", cuerpo)
