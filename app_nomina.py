@@ -7,8 +7,10 @@ import re
 import glob
 import smtplib
 import io
-# CAMBIO DE TECNOLOGÍA: Usamos la librería moderna que gestiona UTF-8 automático
-from email.message import EmailMessage
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from datetime import datetime
@@ -18,16 +20,19 @@ from reportlab.lib.utils import ImageReader
 from PIL import Image
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-# Usamos el shortcode :necktie: para evitar errores de iconos
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
+# Usamos un emoji estándar de Python para evitar errores de codificación en el servidor
+st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon="👔")
 
 # ==========================================
-# 📧 CONFIGURACIÓN
+# 📧 CONFIGURACIÓN TÉCNICA BLINDADA
 # ==========================================
-# Solo leemos contraseñas de los secrets. El correo lo definimos FIJO abajo.
+# IMPORTANTE: Definimos el correo aquí como texto plano puro.
+# Al no usar la variable de secrets para el NOMBRE, evitamos que se cuele la Ñ.
+SENDER_EMAIL = "nomina@trajesespanoles.mx"
 EMAIL_PASSWORD = "OTE.R3c1b05"
 PASSWORD_ADMIN = "OTE.Admin2026"
 
+# Solo recuperamos la contraseña de los secrets si existe
 if "email_password" in st.secrets:
     EMAIL_PASSWORD = st.secrets["email_password"]
     PASSWORD_ADMIN = st.secrets.get("admin_password", PASSWORD_ADMIN)
@@ -66,16 +71,25 @@ if 'user_data' not in st.session_state:
 
 # --- 3. FUNCIONES TÉCNICAS ---
 
-def limpieza_absoluta(texto):
+def sanitizar_ascii(texto):
     """
-    Función de limpieza agresiva para nombres de archivo.
-    Solo permite letras A-Z y números.
+    Función de limpieza agresiva.
+    Convierte cualquier texto a A-Z y 0-9 exclusivamente.
+    Elimina Ñ, acentos, espacios y símbolos.
     """
     if not isinstance(texto, str): return "DOC"
-    # Reemplazos manuales
-    texto = texto.upper().replace("Ñ", "N")
-    # Regex final: Solo A-Z y 0-9
-    return re.sub(r'[^A-Z0-9]', '', texto)
+    # Mapa de reemplazo manual
+    reemplazos = {
+        "Ñ": "N", "ñ": "n",
+        "Á": "A", "á": "a", "É": "E", "é": "e",
+        "Í": "I", "í": "i", "Ó": "O", "ó": "o", "Ú": "U", "ú": "u"
+    }
+    texto_limpio = texto.upper()
+    for viejo, nuevo in reemplazos.items():
+        texto_limpio = texto_limpio.replace(viejo, nuevo)
+        
+    # Regex final: Solo permite letras inglesas y números
+    return re.sub(r'[^A-Z0-9]', '', texto_limpio)
 
 def buscar_archivo_inteligente(nombre_archivo_csv, rfc):
     ruta_exacta = os.path.join("recibos", nombre_archivo_csv)
@@ -116,61 +130,72 @@ def generar_pdf_firmado(ruta_pdf_original, imagen_firma_numpy):
     except Exception as e:
         return None
 
-def enviar_correo_moderno(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
-    # 1. Definimos el remitente AQUÍ DENTRO (Hardcoded para evitar errores externos)
-    REMITENTE_SEGURO = "nomina@trajesespanoles.mx"
+def enviar_correo_definitivo(correo_empleado, ruta_pdf, nombre_empleado, rfc_empleado):
+    # 1. Limpieza de datos (Convertimos todo a ASCII seguro)
+    rfc_safe = sanitizar_ascii(rfc_empleado)
+    nombre_archivo_seguro = f"Recibo_{rfc_safe}.pdf"
     
-    # 2. Limpieza de datos
-    rfc_safe = limpieza_absoluta(rfc_empleado)
-    nombre_archivo = f"Recibo_{rfc_safe}.pdf"
-    
+    # 2. Validación de correo destino
     email_destino = None
     if correo_empleado and "@" in str(correo_empleado):
         email_destino = str(correo_empleado).strip()
 
     try:
-        # 3. USAMOS LA LIBRERÍA MODERNA (EmailMessage)
-        # Esta librería maneja UTF-8 automáticamente, adiós al error ASCII.
-        msg = EmailMessage()
-        msg['Subject'] = f"Recibo Nomina - {rfc_safe}"
-        msg['From'] = REMITENTE_SEGURO
+        # Construcción del Mensaje
+        msg = MIMEMultipart()
         
+        # --- FIX CRÍTICO: REMITENTE PURO ---
+        # No usamos nombre para el remitente, solo el correo.
+        # Esto evita el error de la Ñ en la posición 38 del header.
+        msg['From'] = SENDER_EMAIL 
+        
+        # Asunto limpio (Sin Ñ)
+        msg['Subject'] = f"Recibo de Nomina - {rfc_safe}"
+
+        destinatarios = []
         cuerpo = ""
+        
+        # Cuerpo del mensaje (Aquí SÍ usamos UTF-8 para que se vea bonito)
+        nombre_empresa_bonito = "Operadora de Trajes Españoles"
         
         if email_destino:
             msg['To'] = email_destino
-            msg['Cc'] = REMITENTE_SEGURO
+            msg['Cc'] = SENDER_EMAIL
+            destinatarios = [email_destino, SENDER_EMAIL]
             
-            # Texto del cuerpo
             cuerpo = f"""Estimado colaborador,
 
-Adjunto enviamos tu recibo de nomina firmado.
-RFC: {rfc_safe}
+Adjunto enviamos tu recibo de nómina firmado digitalmente.
+RFC: {rfc_empleado}
 
-Atte.
-Operadora de Trajes Espanoles (RRHH)
-"""
+Atentamente,
+{nombre_empresa_bonito}
+Departamento de Recursos Humanos"""
         else:
-            msg['To'] = REMITENTE_SEGURO
-            cuerpo = f"AVISO: El empleado {rfc_safe} firmo el recibo (sin correo personal)."
-        
-        # Establecemos el contenido (UTF-8 es automático aquí)
-        msg.set_content(cuerpo)
+            msg['To'] = SENDER_EMAIL
+            destinatarios = [SENDER_EMAIL]
+            cuerpo = f"AVISO DEL SISTEMA:\nEl empleado con RFC {rfc_safe} firmó el recibo (no tiene correo personal registrado)."
 
-        # 4. Adjuntamos el PDF
-        with open(ruta_pdf, 'rb') as f:
-            file_data = f.read()
-            # Esta función maneja la codificación del adjunto sola
-            msg.add_attachment(file_data, maintype='application', subtype='pdf', filename=nombre_archivo)
+        # Codificamos el cuerpo explícitamente en UTF-8
+        msg.attach(MIMEText(cuerpo, 'plain', 'utf-8'))
 
-        # 5. Envío
-        with smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(REMITENTE_SEGURO, EMAIL_PASSWORD)
-            server.send_message(msg) # send_message es más inteligente que sendmail
-            
+        # Adjuntar PDF
+        with open(ruta_pdf, "rb") as f:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(f.read())
+        encoders.encode_base64(part)
+        # Nombre de archivo seguro
+        part.add_header('Content-Disposition', 'attachment', filename=nombre_archivo_seguro)
+        msg.attach(part)
+
+        # Transmisión SMTP
+        server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
+        server.ehlo()
+        server.starttls() # Encriptación
+        server.ehlo()
+        server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+        server.sendmail(SENDER_EMAIL, destinatarios, msg.as_string())
+        server.quit()
         return True, "Enviado correctamente"
     
     except Exception as e:
@@ -209,7 +234,7 @@ def extraer_datos_limpios(pdf_file):
     try:
         reader = PdfReader(pdf_file)
         texto = "".join([page.extract_text() for page in reader.pages])
-        # Regex simplificado
+        # Regex tolerante para lectura
         match = re.search(r'[A-Z]\d{5}\s*[-]?\s*([A-Z\s]+)', texto) 
         nombre = limpiar_basico(match.group(1)) if match else pdf_file.name.replace(".pdf", "")
         match_rfc = re.search(r'RFC:\s*([A-Z]{4}\d{6}[A-Z0-9]{3})', texto)
@@ -219,8 +244,8 @@ def extraer_datos_limpios(pdf_file):
 
 # --- 4. INTERFAZ PRINCIPAL ---
 
-st.title("Operadora de Trajes Espanoles")
-st.caption("Sistema Nexus - Nomina Digital")
+st.title("Operadora de Trajes Españoles")
+st.caption("Sistema Nexus - Nómina Digital")
 
 if acceso_concedido:
     tab1, tab2 = st.tabs(["Portal Empleado", "Panel RRHH"])
@@ -255,7 +280,7 @@ with tab1:
                         else: st.error("Clave incorrecta")
             else: st.warning("RFC no encontrado en base de datos.")
         elif rfc_in:
-            st.error("Esperando carga de base de datos...")
+            st.error("Base de datos no cargada (Esperando Admin).")
             
     else:
         u = st.session_state.user_data
@@ -273,8 +298,8 @@ with tab1:
 
                 st.markdown(f"**Visualizando archivo:** `{os.path.basename(archivo_encontrado)}`")
                 
-                # VISOR COMPATIBLE
-                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descargalo aqui</a>.</p></object>'
+                # VISOR ROBUSTO
+                pdf_display = f'<object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px"><p>Tu navegador no muestra PDFs. <a href="data:application/pdf;base64,{base64_pdf}" download>Descárgalo aquí</a>.</p></object>'
                 st.markdown(pdf_display, unsafe_allow_html=True)
                 
                 st.download_button(
@@ -301,8 +326,8 @@ with tab1:
                                     match = df_c[df_c['rfc'] == st.session_state.rfc_actual]
                                     if not match.empty: correo_empleado = match.iloc[0]['email']
                                 
-                                # FUNCIÓN MODERNA
-                                exito, msg = enviar_correo_moderno(correo_empleado, ruta_firmado, u['name'], u['rfc'])
+                                # LLAMADA A FUNCIÓN FINAL
+                                exito, msg = enviar_correo_definitivo(correo_empleado, ruta_firmado, u['name'], u['rfc'])
                                 
                                 if exito:
                                     st.success("Listo! Recibo firmado enviado.")
@@ -332,7 +357,7 @@ if acceso_concedido and tab2:
             if os.path.exists("recibos"):
                 archivos_en_nube = os.listdir("recibos")
                 if archivos_en_nube: st.write(archivos_en_nube)
-                else: st.warning("Carpeta vacia.")
+                else: st.warning("Carpeta vacía.")
             else: st.error("Carpeta no existe.")
 
         if os.path.exists('Control_Maestro.csv'):
@@ -349,7 +374,7 @@ if acceso_concedido and tab2:
             st.dataframe(df_status.style.applymap(color_rojo, subset=['Firmado']), use_container_width=True)
 
         st.write("---")
-        st.subheader("Carga de Nomina")
+        st.subheader("Carga de Nómina")
         uploaded = st.file_uploader("Subir PDFs Semanales", accept_multiple_files=True)
         
         if st.button("Procesar Archivos"):
