@@ -7,17 +7,24 @@ import re
 import glob
 import smtplib
 import io
-# Librería moderna para manejo automático de codificación
+# Librería moderna para el correo
 from email.message import EmailMessage
+# Librerías de PDF e imagen
 from pypdf import PdfReader, PdfWriter
 from streamlit_drawable_canvas import st_canvas
 from reportlab.pdfgen import canvas as pdf_canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import ImageReader
 from PIL import Image
+# --- NUEVO VISOR PROFESIONAL (Requiere streamlit-pdf-viewer en requirements.txt) ---
+try:
+    from streamlit_pdf_viewer import pdf_viewer
+except ImportError:
+    st.error("⚠️ Faltan librerías. Agrega 'streamlit-pdf-viewer' a tu requirements.txt")
+    pdf_viewer = None
 
 # --- 1. CONFIGURACION DE PAGINA ---
-st.set_page_config(page_title="Nexus - OTE", layout="wide", page_icon=":necktie:")
+st.set_page_config(page_title="OTESA - OTE", layout="wide", page_icon=":necktie:")
 
 # --- 2. INICIALIZACION DE ESTADO ---
 if 'admin' not in st.session_state: st.session_state.admin = False
@@ -25,57 +32,46 @@ if 'user' not in st.session_state: st.session_state.user = None
 if 'autenticado' not in st.session_state: st.session_state.autenticado = False
 
 # ==========================================
-# 🛑 ZONA BLINDADA (BYPASS DE SECRETS)
+# 🛑 CREDENCIALES (YA PROBADAS Y FUNCIONALES)
 # ==========================================
-# Escribimos las credenciales DIRECTAMENTE aquí para evitar que
-# el archivo de configuración de la nube meta basura o caracteres raros.
-
 SENDER_EMAIL = "nomina@trajesespanoles.mx"
-EMAIL_PASSWORD = "OTE.R3c1b05"  # <--- CONTRASEÑA CORRECTA Y CORTA (SIN Ñ)
+EMAIL_PASSWORD = "OTE.R3c1b05" 
 PASSWORD_ADMIN = "OTE.Admin2026"
 
 SERVIDOR_SMTP = "smtp.ionos.com"
 PUERTO_SMTP = 587
 # ==========================================
 
-# --- FUNCION DE LIMPIEZA TOTAL ---
+# --- FUNCION DE LIMPIEZA ---
 def limpiar_todo(texto):
     """Deja solo letras y números. Convierte Ñ->N."""
     if not isinstance(texto, str): return "DOC"
-    # Mapa de reemplazo manual
     mapa = {"Ñ":"N", "ñ":"n", "Á":"A", "É":"E", "Í":"I", "Ó":"O", "Ú":"U", "á":"a", "é":"e", "í":"i", "ó":"o", "ú":"u"}
     texto_limpio = texto.upper()
     for k, v in mapa.items():
         texto_limpio = texto_limpio.replace(k, v)
     return re.sub(r'[^A-Z0-9]', '', texto_limpio)
 
-# --- FUNCION DE ENVIO DEFINITIVA ---
+# --- FUNCION DE ENVIO (MANTIENE LA SOLUCION DEL EXITO ANTERIOR) ---
 def enviar_correo_final(correo_destino, ruta_pdf, rfc_empleado):
-    # 1. Limpieza de datos
     rfc_safe = limpiar_todo(rfc_empleado)
-    nombre_archivo = "Recibo_Nomina.pdf" # Nombre genérico seguro
+    nombre_archivo = "Recibo_Nomina.pdf"
     
-    # 2. Validar destino
     if correo_destino and "@" in str(correo_destino):
         destinatario = str(correo_destino).strip()
     else:
-        destinatario = SENDER_EMAIL # Se envía a sí mismo si no hay correo
-    
-    # DEBUG EN PANTALLA (Para ver qué contraseña se está usando realmente)
-    st.caption(f"⚙️ Debug: Usando cuenta {SENDER_EMAIL} (Pass len: {len(EMAIL_PASSWORD)})")
+        destinatario = SENDER_EMAIL
 
     try:
-        # Creación del mensaje con EmailMessage (Maneja UTF-8 nativo)
         msg = EmailMessage()
         msg['Subject'] = f"Recibo Nomina - {rfc_safe}"
         msg['From'] = SENDER_EMAIL
         msg['To'] = destinatario
         msg['Cc'] = SENDER_EMAIL
 
-        # Cuerpo del mensaje
         cuerpo = f"""Estimado colaborador,
 
-Adjuntamos su recibo de nomina correspondiente.
+Adjuntamos su recibo de nomina correspondiente a esta Semana de Trabajo, Agradecemos de manera Infinita tu compromiso ¡¡.
 RFC Referencia: {rfc_safe}
 
 Atte.
@@ -83,20 +79,15 @@ RRHH - Operadora de Trajes Espanoles
 """
         msg.set_content(cuerpo)
 
-        # Adjunto
         with open(ruta_pdf, 'rb') as f:
             file_data = f.read()
             msg.add_attachment(file_data, maintype='application', subtype='pdf', filename=nombre_archivo)
 
-        # CONEXIÓN Y ENVÍO
         server = smtplib.SMTP(SERVIDOR_SMTP, PUERTO_SMTP)
         server.ehlo()
         server.starttls()
         server.ehlo()
-        
-        # LOGIN (Aquí fallaba antes por leer la contraseña incorrecta)
         server.login(SENDER_EMAIL, EMAIL_PASSWORD)
-        
         server.send_message(msg)
         server.quit()
         
@@ -119,8 +110,8 @@ def firmar_pdf(ruta_orig, firma_bytes):
         img_buffer = io.BytesIO()
         img.save(img_buffer, format='PNG')
         img_buffer.seek(0)
-        can.drawImage(ImageReader(img_buffer), 460, 300, width=150, height=60, mask='auto')
-        can.drawString(470, 290, "Firma Digital")
+        can.drawImage(ImageReader(img_buffer), 430, 240, width=150, height=60, mask='auto')
+        can.drawString(480, 235, "Firma Digital Empleado")
         can.save()
         packet.seek(0)
         new_pdf = PdfReader(packet)
@@ -151,8 +142,8 @@ def extraer_info_pdf(file):
 # INTERFAZ
 # ==========================================
 with st.sidebar:
-    if os.path.exists("logo.png"): st.image("logo.png", width=200)
-    st.title("OTE V13.0")
+    if os.path.exists("logo.jpg"): st.image("logo.jpg", width=200)
+    st.title("OTE V14.0")
     
     modo_admin_activado = st.toggle("Modo Admin")
     if modo_admin_activado:
@@ -200,31 +191,42 @@ else:
         
         if pdf_path:
             with open(pdf_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
+                pdf_bytes = f.read()
             
-            # VISOR PDF MEJORADO
-            st.markdown(f'<object data="data:application/pdf;base64,{b64}" type="application/pdf" width="100%" height="600px"><p>Descarga abajo.</p></object>', unsafe_allow_html=True)
-            
+            # --- VISUALIZACIÓN NUEVA Y PERFECTA ---
+            if pdf_viewer:
+                st.write("📄 **Vista Previa del Documento:**")
+                # Renderiza el PDF como imágenes nativas (funciona en celular)
+                pdf_viewer(input=pdf_bytes, width=700)
+            else:
+                st.warning("El visor no pudo cargarse. Revisa el requirements.txt")
+            # -------------------------------------
+
             st.write("---")
-            st.write("Firma aquí:")
+            st.write("✍️ **Firma Digital:**")
             canvas = st_canvas(stroke_width=2, height=150, key="canvas")
             
-            if st.button("Firmar y Enviar"):
-                if canvas.image_data is not None:
-                    path_firmado = firmar_pdf(pdf_path, canvas.image_data)
-                    if path_firmado:
-                        email_p = None
-                        if os.path.exists("Directorio_Contactos.csv"):
-                            dfc = pd.read_csv("Directorio_Contactos.csv")
-                            match_c = dfc[dfc['rfc'] == u['rfc']]
-                            if not match_c.empty: email_p = match_c.iloc[0]['email']
-                        
-                        # ENVIO
-                        ok, msg = enviar_correo_final(email_p, path_firmado, u['rfc'])
-                        if ok:
-                            st.success("Enviado correctamente!")
-                            st.balloons()
-                        else: st.error(msg)
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Firmar y Enviar", type="primary"):
+                    if canvas.image_data is not None:
+                        with st.spinner("Firmando y enviando..."):
+                            path_firmado = firmar_pdf(pdf_path, canvas.image_data)
+                            if path_firmado:
+                                email_p = None
+                                if os.path.exists("Directorio_Contactos.csv"):
+                                    dfc = pd.read_csv("Directorio_Contactos.csv")
+                                    match_c = dfc[dfc['rfc'] == u['rfc']]
+                                    if not match_c.empty: email_p = match_c.iloc[0]['email']
+                                
+                                ok, msg = enviar_correo_final(email_p, path_firmado, u['rfc'])
+                                if ok:
+                                    st.success("¡Enviado correctamente!")
+                                    st.balloons()
+                                else: st.error(msg)
+            with col2:
+                st.download_button("⬇️ Descargar Original", data=pdf_bytes, file_name="Recibo.pdf", mime="application/pdf")
+
         else: st.warning("PDF no encontrado.")
         
         st.write("---")
